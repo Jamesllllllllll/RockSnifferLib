@@ -136,6 +136,24 @@ namespace RockSnifferLib.Sniffing
         private int startLogDeferralCount = 0;
         private const int START_LOG_DEFERRAL_MAX = 50; // ~5s at 100ms polling
 
+        // ─────────────────────────────────────────────────────────────────────────
+        // PREV-PATH HEURISTIC (v0.6.5 hotfix)
+        //
+        // Persists the path (arrangement type — Lead/Rhythm/Bass) of the most recent
+        // successfully-resolved song-start. Used as a fallback in LogSongStartIfPossible
+        // when the arrangementID memory hasn't populated AND the song has multiple
+        // playable arrangements (so the single-playable heuristic can't disambiguate).
+        //
+        // Mirrors the JS-side prevPath fallback in sniffer-poller.js's
+        // getCurrentArrangement: a bassist who plays Bass on every song will keep
+        // getting Bass auto-resolved on subsequent songs even when arrangementID
+        // memory is slow to populate (typical for Nonstop Play).
+        //
+        // Initialized to null; populated on first successful resolution. Stays
+        // populated across songs and Run() restarts within the same Sniffer instance.
+        // ─────────────────────────────────────────────────────────────────────────
+        private string lastResolvedPath = null;
+
         // Public properties to expose completed and paused status
         public bool Completed => completed;
         public bool Paused => paused;
@@ -805,7 +823,29 @@ namespace RockSnifferLib.Sniffing
                         arrangement = singlePlayable;
                         fallbackReason = "single-playable-arrangement heuristic";
                     }
-                    else if (arrangements.Count == 1)
+                    else if (playableCount > 1 && !string.IsNullOrEmpty(lastResolvedPath))
+                    {
+                        // PREV-PATH HEURISTIC (v0.6.5 hotfix):
+                        // Multiple playable arrangements — try matching the last-resolved
+                        // path from a previous song. This handles the Nonstop Play case
+                        // where arrangement_hash memory hasn't populated yet AND the song
+                        // has multiple playable arrangements (so the single-playable
+                        // heuristic can't disambiguate). For users who consistently play
+                        // one arrangement type (e.g. a bassist always plays Bass), this
+                        // resolves correctly almost every time.
+                        foreach (var arr in arrangements)
+                        {
+                            if (!arr.isBonusArrangement && !arr.isAlternateArrangement &&
+                                (arr.type == lastResolvedPath || arr.name == lastResolvedPath))
+                            {
+                                arrangement = arr;
+                                fallbackReason = "prev-path heuristic (\"" + lastResolvedPath + "\")";
+                                break;
+                            }
+                        }
+                    }
+
+                    if (arrangement == null && arrangements.Count == 1)
                     {
                         // Last resort: only one arrangement total (even if it's bonus/alternate, it's the only option)
                         arrangement = arrangements[0];
@@ -897,8 +937,24 @@ namespace RockSnifferLib.Sniffing
             currentSongRunPath = path;
             currentSongRunTuning = tuning;
 
+            // Track the resolved path for the prev-path fallback heuristic on future songs
+            // (see fallback block above). This persists across songs so that, e.g., a bassist
+            // who plays Bass on every song will keep getting Bass auto-resolved even when
+            // arrangementID memory hasn't populated and the song has multiple playable
+            // arrangements.
+            if (!string.IsNullOrEmpty(path) && path != "unknown")
+            {
+                lastResolvedPath = path;
+            }
+
             // Fire-once guard: this songID's start is now logged.
             lastLogStartedForSongID = currentCDLCDetails.songID;
+
+            // Reset the END guard (cleared from any previous run of THIS or any other song).
+            // Without this clear, if the user replays the same song (songID unchanged), the
+            // LogSongEnd fire-once check would see lastLogEndedForSongID == currentCDLCDetails.songID
+            // from the previous run and silently skip the new run's end-event firing.
+            lastLogEndedForSongID = null;
 
             // Fire event with actual gameplay start timestamp
             var actualStartTimestamp = DateTime.Now;
@@ -992,6 +1048,18 @@ namespace RockSnifferLib.Sniffing
                 tuning = currentSongRunTuning,
                 readout = snapshotReadout
             });
+
+            // Reset song-run state so a replay of the SAME song (songID unchanged: restart,
+            // exit-and-replay, finish-and-replay) can fire start/end again as a NEW run.
+            // We keep lastLogEndedForSongID set so any duplicate end-trigger paths in this
+            // same poll cycle (e.g. songID-change AND gameStage-transition both trying to
+            // force-end) get blocked; lastLogEndedForSongID is cleared on the next
+            // successful LogSongStart.
+            lastLogStartedForSongID = null;
+            startLogDeferralCount = 0;
+            currentSongRunArrangementID = null;
+            currentSongRunPath = null;
+            currentSongRunTuning = null;
         }
 
         /// <summary>
