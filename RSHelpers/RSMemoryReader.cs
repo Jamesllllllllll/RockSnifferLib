@@ -71,9 +71,22 @@ namespace RockSnifferLib.RSHelpers
 
             // ARRANGEMENT HASH
             //
-            // This is set to the arrangement persistent id while playing a song
+            // This is set to the arrangement persistent id while playing a song.
+            //
+            // VALIDATION (added in v0.6.5):
+            // The memory pointer for arrangement_hash leaks junk values when not initialized
+            // (e.g. song titles like "Fear Inoculum", album-art URN strings like
+            // "urn:image:dds:album_...", etc.) — leftover bytes from whatever previously occupied
+            // that memory region. Real arrangement IDs are 32-character lowercase or uppercase
+            // hex MD5 hashes. We reject anything that doesn't match that shape so the JS layer
+            // doesn't have to guess whether it's looking at a hash or garbage.
+            //
+            // Stale values (a valid 32-hex hash from the *previous* song persisting into the
+            // current song's polls) are NOT caught here — they pass format validation. Those
+            // are handled at the Sniffer.cs layer where we have access to the current song's
+            // arrangement list and can cross-reference.
             string arrangement_hash = MemoryHelper.ReadStringFromMemory(rsProcessHandle, FollowPointers(MemoryOffsets.GetArrangementHashPointer(edition)));
-            if (arrangement_hash != null)
+            if (IsValidArrangementHash(arrangement_hash))
             {
                 readout.arrangementID = arrangement_hash;
             }
@@ -129,6 +142,34 @@ namespace RockSnifferLib.RSHelpers
             prevReadout.songTimer = readout.songTimer;
 
             return prevReadout;
+        }
+
+        /// <summary>
+        /// Validates that a string is a 32-character hexadecimal hash matching the format of
+        /// Rocksmith arrangement IDs (MD5 hashes serialized as hex). Returns false for null,
+        /// empty, wrong length, or any non-hex character.
+        ///
+        /// Used to filter out junk reads from the arrangement_hash memory pointer when the
+        /// game hasn't yet populated that location with a valid hash (e.g. during song-load
+        /// transitions, especially in Nonstop Play).
+        /// </summary>
+        private static bool IsValidArrangementHash(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length != 32)
+            {
+                return false;
+            }
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (!((c >= '0' && c <= '9') ||
+                      (c >= 'A' && c <= 'F') ||
+                      (c >= 'a' && c <= 'f')))
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private IntPtr FollowPointers((int entryAddress, int[] offsets) tuple)

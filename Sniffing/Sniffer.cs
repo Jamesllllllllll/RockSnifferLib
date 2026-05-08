@@ -84,6 +84,16 @@ namespace RockSnifferLib.Sniffing
         private const float STALL_EPSILON = 0.001f;      // jitter tolerance (< 1 ms)
         private const float END_OF_SONG_PAUSE_GUARD = 2.0f; // suppress pause detection within last N seconds of song
 
+        /// <summary>
+        /// Suppressor for repeated stale-arrangementID warnings (added in v0.6.5).
+        /// The cross-reference check fires every poll, so if the memory pointer keeps returning
+        /// the same stale hash for many consecutive polls (e.g. through an entire Nonstop song
+        /// transition), without this field we'd spam the log. This stores the most recent stale
+        /// value we warned about; we only re-warn when the stale value changes or after a valid
+        /// arrangement is observed (which clears this back to null).
+        /// </summary>
+        private string lastWarnedStaleArrangementID = null;
+
         // Public properties to expose completed and paused status
         public bool Completed => completed;
         public bool Paused => paused;
@@ -245,8 +255,63 @@ namespace RockSnifferLib.Sniffing
                         stallCount = 0;
                         lastObservedTimer = float.MinValue;
                         paused = false;
+
+                        // Reset stale-arrangementID warning suppressor so each new song starts fresh
+                        lastWarnedStaleArrangementID = null;
                     }
 
+                }
+
+                // ARRANGEMENT ID CROSS-REFERENCE (added in v0.6.5):
+                //
+                // The arrangement_hash memory pointer in RSMemoryReader can return a STALE valid
+                // hash from the previous song after the songID has already flipped to the new
+                // song — particularly in Nonstop Play, where the game transitions between songs
+                // without fully clearing the arrangement memory region. Format validation in
+                // RSMemoryReader (IsValidArrangementHash) cannot detect this because the stale
+                // value is a real 32-char hex hash; it just belongs to the wrong song.
+                //
+                // At this point in the loop, currentCDLCDetails has been updated to reflect the
+                // current songID, and its arrangements list is the authoritative set of valid
+                // arrangement IDs for this song. If newReadout.arrangementID doesn't appear in
+                // that list, it's stale (or somehow wrong) — clear it. This prevents downstream
+                // consumers (the JS addon layer, EnoLogic event payloads, etc.) from receiving
+                // an arrangementID that can't be matched against the current song's data.
+                //
+                // The next memory poll that returns a hash matching the new song will populate
+                // arrangementID correctly. If it never does (pathological case), a fallback in
+                // LogSongStartIfPossible() handles song-start logging gracefully.
+                if (currentCDLCDetails != null && currentCDLCDetails.IsValid() &&
+                    !string.IsNullOrEmpty(newReadout.arrangementID))
+                {
+                    bool matchesAnArrangement = false;
+                    foreach (var arr in currentCDLCDetails.arrangements)
+                    {
+                        if (arr.arrangementID == newReadout.arrangementID)
+                        {
+                            matchesAnArrangement = true;
+                            break;
+                        }
+                    }
+                    if (!matchesAnArrangement)
+                    {
+                        // Suppress repeat warnings for the same stale value within a song to avoid log spam.
+                        // Only log when the stale value is *new* relative to the previous poll's stale value.
+                        if (newReadout.arrangementID != lastWarnedStaleArrangementID)
+                        {
+                            Logger.LogError(
+                                "ArrangementID '{0}' from memory does not match any arrangement in current song '{1}' — clearing as stale (likely from a previous song or uninitialized memory).",
+                                newReadout.arrangementID,
+                                currentCDLCDetails.songID ?? newReadout.songID ?? "<unknown>");
+                            lastWarnedStaleArrangementID = newReadout.arrangementID;
+                        }
+                        newReadout.arrangementID = null;
+                    }
+                    else
+                    {
+                        // We got a valid match — clear the suppressor so future stale values get logged.
+                        lastWarnedStaleArrangementID = null;
+                    }
                 }
 
                 newReadout.CopyTo(ref currentMemoryReadout);
@@ -535,13 +600,87 @@ namespace RockSnifferLib.Sniffing
             var arrangement = currentCDLCDetails.arrangements?
                 .FirstOrDefault(a => a.arrangementID == currentMemoryReadout.arrangementID);
 
+            // FALLBACK HEURISTIC (added in v0.6.5):
+            //
+            // If arrangementID lookup failed, attempt to recover so the song still gets logged
+            // to playthrough history. Pre-v0.6.5, a missing/junk arrangementID caused this
+            // function to silently early-return — meaning the song was never logged at all.
+            //
+            // Heuristic: if there's exactly one "playable" arrangement (non-bonus, non-alternate),
+            // use that. This handles the most common case (single-arrangement songs and most
+            // multi-arrangement songs where there's a clear "main" path). If there are multiple
+            // playable arrangements or zero, we can't disambiguate — log the song with
+            // path="unknown" / tuning="unknown" so the row still appears in history with
+            // detectable markers.
+            //
+            // Rationale for "log unknown rather than skip": missing rows are harder to notice
+            // than rows marked "unknown". The user can filter on path="unknown" later to find
+            // affected sessions, or manually correct in their SQLite.
+            string fallbackReason = null;
             if (arrangement == null)
             {
-                return;
+                var arrangements = currentCDLCDetails.arrangements;
+
+                if (arrangements != null && arrangements.Count > 0)
+                {
+                    // Try to pick a single non-bonus, non-alternate arrangement
+                    ArrangementDetails singlePlayable = null;
+                    int playableCount = 0;
+                    foreach (var arr in arrangements)
+                    {
+                        if (!arr.isBonusArrangement && !arr.isAlternateArrangement)
+                        {
+                            singlePlayable = arr;
+                            playableCount++;
+                            if (playableCount > 1) break; // can stop early — already ambiguous
+                        }
+                    }
+
+                    if (playableCount == 1)
+                    {
+                        arrangement = singlePlayable;
+                        fallbackReason = "single-playable-arrangement heuristic";
+                    }
+                    else if (arrangements.Count == 1)
+                    {
+                        // Last resort: only one arrangement total (even if it's bonus/alternate, it's the only option)
+                        arrangement = arrangements[0];
+                        fallbackReason = "only-arrangement-on-song heuristic";
+                    }
+                }
             }
 
-            string path = arrangement.type;
-            string tuning = arrangement.tuning.TuningName;
+            string path;
+            string tuning;
+
+            if (arrangement != null)
+            {
+                path = arrangement.type;
+                tuning = arrangement.tuning.TuningName;
+
+                if (fallbackReason != null)
+                {
+                    Logger.LogError(
+                        "Could not resolve arrangement at song start (memory arrangementID was '{0}'). Used fallback ({1}) and chose path='{2}', tuning='{3}'. Song will be logged to history with these values.",
+                        currentMemoryReadout.arrangementID ?? "<null>",
+                        fallbackReason,
+                        path,
+                        tuning);
+                }
+            }
+            else
+            {
+                // No usable arrangement and the heuristic couldn't disambiguate.
+                // Log the song anyway with explicit "unknown" markers so the row isn't silently dropped.
+                path = "unknown";
+                tuning = "unknown";
+                int arrCount = currentCDLCDetails.arrangements?.Count ?? 0;
+                Logger.LogError(
+                    "Could not resolve arrangement at song start for song '{0}' (memory arrangementID was '{1}'). Song has {2} arrangements but none could be unambiguously selected — logging to history with path='unknown' / tuning='unknown'.",
+                    currentCDLCDetails.songID ?? "<unknown>",
+                    currentMemoryReadout.arrangementID ?? "<null>",
+                    arrCount);
+            }
 
             Logger.Log(
                 "EVENT=START;" +
