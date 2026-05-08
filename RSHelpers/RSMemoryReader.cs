@@ -61,6 +61,17 @@ namespace RockSnifferLib.RSHelpers
                     //Remove Play_ prefix and _Preview or _Invalid suffix
                     string song_id = preview_name.Substring(5, preview_name.Length - 13);
 
+                    // RESET arrangementID ON SONG-ID CHANGE (v0.6.5):
+                    // The internal `readout` field persists across DoReadout calls. Without
+                    // this reset, a valid hash from the PREVIOUS song lingers in
+                    // readout.arrangementID even after the user has navigated to a different
+                    // song — leading to stale-arrangement reports during menu browsing. We
+                    // null it here so the next memory read for the new song starts fresh.
+                    if (readout.songID != song_id)
+                    {
+                        readout.arrangementID = null;
+                    }
+
                     //Assign to readout
                     readout.songID = song_id;
                 }
@@ -140,6 +151,19 @@ namespace RockSnifferLib.RSHelpers
             prevReadout.songID = readout.songID;
             prevReadout.gameStage = readout.gameStage;
             prevReadout.songTimer = readout.songTimer;
+
+            // Always propagate arrangementID (v0.6.5):
+            // The previous behavior of only updating arrangementID when songTimer > 0
+            // caused two problems:
+            //   (1) When the user picked an arrangement in the LaS song-options screen
+            //       (songTimer is 0), the new arrangement_hash never reached prevReadout.
+            //       LogSongStartIfPossible then fired with stale data.
+            //   (2) When the Sniffer.cs cross-reference cleared prevReadout.arrangementID
+            //       (because of a stale value), nothing re-populated it from `readout`
+            //       on the next poll until songTimer > 0 — perpetuating the null state.
+            // Always propagating means the cross-reference clearing is per-poll only;
+            // the next memory read can resupply a valid value immediately.
+            prevReadout.arrangementID = readout.arrangementID;
 
             return prevReadout;
         }
