@@ -102,6 +102,11 @@ namespace RockSnifferLib.Sniffing
         private string currentSongRunArrangementID = null;
         private string currentSongRunPath = null;
         private string currentSongRunTuning = null;
+        // True if the current song run was started while in a Nonstop Play gameStage.
+        // Preserved through end-of-song (Nonstop transitions can change gameStage between
+        // start and end) so PlaythroughHistory and the JS playthrough-tracker can
+        // consistently gate writes for the entire run regardless of when end fires.
+        private bool currentSongRunWasNonstopMode = false;
 
         // ─────────────────────────────────────────────────────────────────────────
         // FIRE-ONCE GUARDS (v0.6.5)
@@ -375,6 +380,7 @@ namespace RockSnifferLib.Sniffing
                         currentSongRunArrangementID = null;
                         currentSongRunPath = null;
                         currentSongRunTuning = null;
+                        currentSongRunWasNonstopMode = false;
                         lastLogStartedForSongID = null;
                         lastLogEndedForSongID = null;
                         startLogDeferralCount = 0;
@@ -1007,6 +1013,20 @@ namespace RockSnifferLib.Sniffing
             currentSongRunPath = path;
             currentSongRunTuning = tuning;
 
+            // Capture Nonstop-mode flag at song START (gameStage may transition by end).
+            // Used by PlaythroughHistory and the JS playthrough-tracker to gate writes —
+            // we don't write history or per-attempt records for songs played in Nonstop
+            // because arrangement resolution is unreliable there (memory pointer doesn't
+            // populate in Nonstop, and bonus/alternate arrangements can be enabled too).
+            // The check covers all Nonstop-related gameStages observed: nsp_main is the
+            // pre-game setlist screen, nonstopplayhub is the between-songs lobby,
+            // nonstopplaygame is the active gameplay stage.
+            string startGameStage = currentMemoryReadout?.gameStage;
+            currentSongRunWasNonstopMode =
+                startGameStage == "nsp_main" ||
+                startGameStage == "nonstopplayhub" ||
+                startGameStage == "nonstopplaygame";
+
             // Track the resolved path for the prev-path fallback heuristic on future songs
             // (see fallback block above). This persists across songs so that, e.g., a bassist
             // who plays Bass on every song will keep getting Bass auto-resolved even when
@@ -1049,7 +1069,8 @@ namespace RockSnifferLib.Sniffing
                 timestamp = actualStartTimestamp,
                 arrangementID = resolvedArrangementID,
                 path = path,
-                tuning = tuning
+                tuning = tuning,
+                wasNonstopMode = currentSongRunWasNonstopMode
             });
         }
 
@@ -1131,6 +1152,7 @@ namespace RockSnifferLib.Sniffing
                 arrangementID = currentSongRunArrangementID,
                 path = currentSongRunPath,
                 tuning = currentSongRunTuning,
+                wasNonstopMode = currentSongRunWasNonstopMode,
                 readout = snapshotReadout
             });
 
@@ -1145,6 +1167,7 @@ namespace RockSnifferLib.Sniffing
             currentSongRunArrangementID = null;
             currentSongRunPath = null;
             currentSongRunTuning = null;
+            currentSongRunWasNonstopMode = false;
         }
 
         /// <summary>

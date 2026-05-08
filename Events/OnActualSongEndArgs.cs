@@ -16,6 +16,10 @@ namespace RockSnifferLib.Events
         public string arrangementID;
         public string path;
         public string tuning;
+        // True if the song was started while Rocksmith was in a Nonstop Play gameStage.
+        // Captured at song START in Sniffer.cs and preserved through end (via the run-context
+        // fields), so end-of-song handlers know whether to skip playthrough tracking.
+        public bool wasNonstopMode;
         // Snapshot of the memory readout at the moment of LogSongEnd. Allows the
         // playthrough history layer to read accurate end-of-song noteData even if
         // currentMemoryReadout has since been updated to the next song's data.
