@@ -831,47 +831,35 @@ namespace RockSnifferLib.Sniffing
             {
                 var arrangements = currentCDLCDetails.arrangements;
 
-                // 2a: Path + non-bonus + non-alternate (the common case)
-                ArrangementDetails singleRegularPathMatch = null;
-                int regularPathMatchCount = 0;
+                // 2a: Prefer non-bonus, non-alternate — first match wins
+                // (v0.6.5 hotfix5.1 — restored legacy first-match behavior; the
+                // count-and-only-pick-if-one logic from initial hotfix5 was leaving
+                // arrangement unresolved when songs had multiple arrangements with type
+                // matching currentPath, falling through to the heuristic chain unnecessarily.)
                 foreach (var arr in arrangements)
                 {
                     if ((arr.type == currentPath || arr.name == currentPath) &&
                         !arr.isBonusArrangement && !arr.isAlternateArrangement)
                     {
-                        singleRegularPathMatch = arr;
-                        regularPathMatchCount++;
-                        if (regularPathMatchCount > 1) break;
+                        arrangement = arr;
+                        fallbackReason = "current Path \"" + currentPath + "\" + non-bonus filter";
+                        break;
                     }
                 }
-                if (regularPathMatchCount == 1)
+
+                // 2b: Bonus/alt allowed if no regular match — first match wins
+                if (arrangement == null)
                 {
-                    arrangement = singleRegularPathMatch;
-                    fallbackReason = "current Path \"" + currentPath + "\" + non-bonus filter";
-                }
-                else if (regularPathMatchCount == 0)
-                {
-                    // 2b: Path-type only (bonus/alt allowed) — last resort within Path resolution
-                    ArrangementDetails singlePathMatch = null;
-                    int pathMatchCount = 0;
                     foreach (var arr in arrangements)
                     {
                         if (arr.type == currentPath || arr.name == currentPath)
                         {
-                            singlePathMatch = arr;
-                            pathMatchCount++;
-                            if (pathMatchCount > 1) break;
+                            arrangement = arr;
+                            fallbackReason = "current Path \"" + currentPath + "\" (bonus/alt allowed)";
+                            break;
                         }
                     }
-                    if (pathMatchCount == 1)
-                    {
-                        arrangement = singlePathMatch;
-                        fallbackReason = "current Path \"" + currentPath + "\" (bonus/alt allowed)";
-                    }
                 }
-                // If still ambiguous (multiple regular OR multiple bonus matches at same
-                // path), Path resolution can't disambiguate — falls through to the legacy
-                // heuristic chain below.
             }
 
             // STEP 3 onwards: Legacy fallback chain (v0.6.5).
