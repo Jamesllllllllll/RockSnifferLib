@@ -131,24 +131,12 @@ namespace RockSnifferLib.Sniffing
         // purpose was to wait for arrangement_hash memory to populate; with Path
         // resolution as the new primary mechanism, there's nothing to wait for — Path
         // is available from Rocksmith launch onward.
-
-        // ─────────────────────────────────────────────────────────────────────────
-        // PREV-PATH HEURISTIC (v0.6.5 hotfix)
         //
-        // Persists the path (arrangement type — Lead/Rhythm/Bass) of the most recent
-        // successfully-resolved song-start. Used as a fallback in LogSongStartIfPossible
-        // when the arrangementID memory hasn't populated AND the song has multiple
-        // playable arrangements (so the single-playable heuristic can't disambiguate).
-        //
-        // Mirrors the JS-side prevPath fallback in sniffer-poller.js's
-        // getCurrentArrangement: a bassist who plays Bass on every song will keep
-        // getting Bass auto-resolved on subsequent songs even when arrangementID
-        // memory is slow to populate (typical for Nonstop Play).
-        //
-        // Initialized to null; populated on first successful resolution. Stays
-        // populated across songs and Run() restarts within the same Sniffer instance.
-        // ─────────────────────────────────────────────────────────────────────────
-        private string lastResolvedPath = null;
+        // The lastResolvedPath field, SnifferRuntimeState persistence, and
+        // defaultArrangementType setting were also REMOVED in v0.6.5 cleanup.
+        // Pre-Path, those were the working fallback chain when arrangementID failed.
+        // Post-Path, they were unreachable in normal operation — Path resolution
+        // (read from a stable memory byte) handles every case they used to handle.
 
         // Public properties to expose completed and paused status
         public bool Completed => completed;
@@ -178,19 +166,6 @@ namespace RockSnifferLib.Sniffing
         /// Settings this sniffer was instantiated with
         /// </summary>
         private readonly SnifferSettings _settings;
-
-        /// <summary>
-        /// Persistent state — survives across sessions. Currently used to remember the
-        /// most recently-resolved arrangement type, so the Nonstop fallback chain has
-        /// a sensible answer even on the FIRST song of a fresh session (without this,
-        /// in-session lastResolvedPath starts null and the first song always falls
-        /// through to defaultArrangementType setting or "unknown").
-        ///
-        /// Type is named SnifferRuntimeState (not SnifferState) to avoid colliding
-        /// with the existing SnifferState enum in this namespace, which represents
-        /// the polling state machine (IN_MENUS / SONG_PLAYING / etc.).
-        /// </summary>
-        private readonly SnifferRuntimeState _state;
 
         /// <summary>
         /// Boolean to let async tasks finish
@@ -223,16 +198,6 @@ namespace RockSnifferLib.Sniffing
             _cache = cache;
             _edition = edition;
             _settings = settings;
-
-            // Load persistent state and seed in-session lastResolvedPath from it. This
-            // means a returning user gets their previously-known arrangement type as the
-            // initial fallback for the very first song of the new session, instead of
-            // starting from null and falling back to defaultArrangementType / "unknown".
-            _state = SnifferRuntimeState.Load();
-            if (!string.IsNullOrEmpty(_state.LastResolvedPath))
-            {
-                lastResolvedPath = _state.LastResolvedPath;
-            }
 
             //Initialize memory reader
             memReader = new RSMemoryReader(_rsProcess, _edition);
@@ -862,16 +827,17 @@ namespace RockSnifferLib.Sniffing
                 }
             }
 
-            // STEP 3 onwards: Legacy fallback chain (v0.6.5).
+            // STEP 3 onwards: Defensive fallback chain (v0.6.5).
             //
             // Reached when both direct arrangementID match AND Path resolution failed.
-            // Mostly relevant for edge cases: Path byte didn't populate (shouldn't happen
-            // given how stable the pointer is, but defensive), or the song has multiple
-            // playable arrangements of the same type (rare but possible).
+            // In normal operation this should not happen — Path is read from a stable
+            // memory byte that's populated from Rocksmith launch onward. These steps
+            // are defense-in-depth for the rare edge case where the Path read failed
+            // (e.g. transient memory hiccup during process tear-down).
             //
-            // Pre-hotfix5 these were the primary fallback path. Post-hotfix5 they're
-            // near-vestigial — kept for the rare edge case and as documentation of what
-            // we did before Path resolution was available.
+            // The pre-Path fallback chain (prev-path heuristic backed by
+            // SnifferRuntimeState persistence, defaultArrangementType setting) was
+            // removed in v0.6.5 cleanup. Path resolution made all of it unreachable.
             if (arrangement == null)
             {
                 var arrangements = currentCDLCDetails.arrangements;
@@ -896,44 +862,10 @@ namespace RockSnifferLib.Sniffing
                         arrangement = singlePlayable;
                         fallbackReason = "single-playable-arrangement heuristic";
                     }
-                    else if (playableCount > 1 && !string.IsNullOrEmpty(lastResolvedPath))
-                    {
-                        // STEP 4: Prev-path heuristic (legacy — Path resolution above
-                        // supersedes this in nearly all cases). lastResolvedPath is
-                        // seeded at startup from SnifferRuntimeState (sniffer_state.json).
-                        foreach (var arr in arrangements)
-                        {
-                            if (!arr.isBonusArrangement && !arr.isAlternateArrangement &&
-                                (arr.type == lastResolvedPath || arr.name == lastResolvedPath))
-                            {
-                                arrangement = arr;
-                                fallbackReason = "prev-path heuristic (\"" + lastResolvedPath + "\")";
-                                break;
-                            }
-                        }
-                    }
-
-                    // STEP 5: defaultArrangementType setting (legacy).
-                    if (arrangement == null && playableCount > 1 &&
-                        _settings != null &&
-                        !string.IsNullOrEmpty(_settings.defaultArrangementType))
-                    {
-                        string defaultType = _settings.defaultArrangementType;
-                        foreach (var arr in arrangements)
-                        {
-                            if (!arr.isBonusArrangement && !arr.isAlternateArrangement &&
-                                (arr.type == defaultType || arr.name == defaultType))
-                            {
-                                arrangement = arr;
-                                fallbackReason = "defaultArrangementType setting (\"" + defaultType + "\")";
-                                break;
-                            }
-                        }
-                    }
 
                     if (arrangement == null && arrangements.Count == 1)
                     {
-                        // STEP 6: only-arrangement-on-song (last resort, even bonus/alternate)
+                        // STEP 4: only-arrangement-on-song (last resort, even bonus/alternate)
                         arrangement = arrangements[0];
                         fallbackReason = "only-arrangement-on-song heuristic";
                     }
@@ -946,6 +878,24 @@ namespace RockSnifferLib.Sniffing
             // edge-case failure that 5 seconds of waiting won't fix. Fall through to
             // unknown logging immediately.
 
+            // Capture Nonstop-mode flag at song START (gameStage may transition by end).
+            // Used by PlaythroughHistory and the JS playthrough-tracker to gate writes —
+            // we don't write history or per-attempt records for songs played in Nonstop
+            // because arrangement resolution is unreliable there (memory pointer doesn't
+            // populate in Nonstop, and bonus/alternate arrangements can be enabled too).
+            // The check covers all Nonstop-related gameStages observed: nsp_main is the
+            // pre-game setlist screen, nonstopplayhub is the between-songs lobby,
+            // nonstopplaygame is the active gameplay stage.
+            //
+            // Computed BEFORE the warning block below so we can suppress the
+            // "Could not resolve arrangement" warning for Nonstop runs (where
+            // Path-based fallback is the expected resolution path).
+            string startGameStage = currentMemoryReadout?.gameStage;
+            currentSongRunWasNonstopMode =
+                startGameStage == "nsp_main" ||
+                startGameStage == "nonstopplayhub" ||
+                startGameStage == "nonstopplaygame";
+
             string path;
             string tuning;
 
@@ -954,8 +904,17 @@ namespace RockSnifferLib.Sniffing
                 path = arrangement.type;
                 tuning = arrangement.tuning.TuningName;
 
-                if (fallbackReason != null)
+                if (fallbackReason != null && !currentSongRunWasNonstopMode)
                 {
+                    // Suppress the warning when the song was started in Nonstop Play.
+                    // arrangementID never populates in Nonstop (known unfixable until a
+                    // Nonstop-compatible arrangementID memory pointer is found), so
+                    // Path-based fallback is the EXPECTED resolution path there, not a
+                    // degraded one. Logging it would just be noise on every Nonstop song.
+                    //
+                    // For LaS / SA / other modes, the warning is still useful — it
+                    // means either a transient timing race (ID hadn't populated yet at
+                    // the read tick) or a genuine ID-mismatch bug worth investigating.
                     Logger.LogError(
                         "Could not resolve arrangement at song start (memory arrangementID was '{0}'). Used fallback ({1}) and chose path='{2}', tuning='{3}'. Song will be logged to history with these values.",
                         currentMemoryReadout.arrangementID ?? "<null>",
@@ -997,44 +956,9 @@ namespace RockSnifferLib.Sniffing
             currentSongRunPath = path;
             currentSongRunTuning = tuning;
 
-            // Capture Nonstop-mode flag at song START (gameStage may transition by end).
-            // Used by PlaythroughHistory and the JS playthrough-tracker to gate writes —
-            // we don't write history or per-attempt records for songs played in Nonstop
-            // because arrangement resolution is unreliable there (memory pointer doesn't
-            // populate in Nonstop, and bonus/alternate arrangements can be enabled too).
-            // The check covers all Nonstop-related gameStages observed: nsp_main is the
-            // pre-game setlist screen, nonstopplayhub is the between-songs lobby,
-            // nonstopplaygame is the active gameplay stage.
-            string startGameStage = currentMemoryReadout?.gameStage;
-            currentSongRunWasNonstopMode =
-                startGameStage == "nsp_main" ||
-                startGameStage == "nonstopplayhub" ||
-                startGameStage == "nonstopplaygame";
-
-            // Track the resolved path for the prev-path fallback heuristic on future songs
-            // (see fallback block above). This persists across songs so that, e.g., a bassist
-            // who plays Bass on every song will keep getting Bass auto-resolved even when
-            // arrangementID memory hasn't populated and the song has multiple playable
-            // arrangements. Also persist to disk (sniffer_state.json) so a returning user
-            // has the previous session's value pre-loaded for the first song of the next
-            // session — without persistence, in-session lastResolvedPath would start null
-            // every session and the first song would fall through to defaultArrangementType
-            // / "unknown".
-            if (!string.IsNullOrEmpty(path) && path != "unknown")
-            {
-                if (lastResolvedPath != path)
-                {
-                    lastResolvedPath = path;
-                    // Save asynchronously to avoid blocking the polling loop on disk IO.
-                    // SnifferState.Save() is best-effort and swallows IO errors internally.
-                    if (_state != null)
-                    {
-                        _state.LastResolvedPath = path;
-                        var stateToSave = _state;
-                        System.Threading.Tasks.Task.Run(() => stateToSave.Save());
-                    }
-                }
-            }
+            // Note: currentSongRunWasNonstopMode and startGameStage were already
+            // computed above (before the warning block) so the warning could
+            // suppress itself in Nonstop. No need to recompute here.
 
             // Fire-once guard: this songID's start is now logged.
             lastLogStartedForSongID = currentCDLCDetails.songID;
