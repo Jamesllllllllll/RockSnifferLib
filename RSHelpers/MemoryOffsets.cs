@@ -153,16 +153,23 @@ public static class MemoryOffsets
     /// </remarks>
     public static (int entryAddress, int[] offsets) GetCurrentPathPointer(RSEdition edition)
     {
-        // Per the discovery: base offset 0x00F5F570, pointer offsets [0x10, 0x1FC],
-        // read as Byte. Same +0x3080 / +0x4080 module-base shift convention as the
-        // other Remastered variants (extrapolated from the consistent pattern used by
-        // existing pointers — re-verify on Beta and Learn_And_Play before relying on
-        // them in production).
+        // Discovered (PoizenJam, v0.6.5 hotfix5) using Cheat Engine on Rocksmith Remastered:
+        //   CE table entry: Rocksmith2014.exe+00F5F570, offsets [0x1FC, 0x10] (CE display
+        //   order — outermost first), read as Byte. Walk order (which FollowPointers
+        //   expects) is the reverse: [0x10, 0x1FC].
+        //
+        // The Beta-build base address below is back-derived from the verified Remastered
+        // address using the consistent +0x3080 (Beta→Remastered) and +0x4080 (Beta→LaP)
+        // shifts that every other pointer in this file uses. That convention has held for
+        // all seven previously-mapped pointers, so it is very likely correct here too —
+        // but the Beta and Learn_And_Play values have not been independently verified.
+        // If those editions ever read 0x00 for Path (with otherwise-working RockSniffer
+        // behavior), check this address as the first suspect.
         return edition switch
         {
-            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5F570, [0x10, 0x1FC]),
-            RSEdition.Remastered => (0x00F5F570 + 0x3080, [0x10, 0x1FC]),
-            RSEdition.Remastered_Learn_And_Play => (0x00F5F570 + 0x4080, [0x10, 0x1FC]),
+            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5C4F0, [0x10, 0x1FC]),
+            RSEdition.Remastered => (0x00F5C4F0 + 0x3080, [0x10, 0x1FC]),
+            RSEdition.Remastered_Learn_And_Play => (0x00F5C4F0 + 0x4080, [0x10, 0x1FC]),
             _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
         };
     }
