@@ -125,21 +125,12 @@ namespace RockSnifferLib.Sniffing
         // Nonstop Play where the timer-based state machine is unreliable).
         private string lastGameStage = null;
 
-        // ─────────────────────────────────────────────────────────────────────────
-        // DEFERRED START LOGGING (v0.6.5)
-        //
-        // In Nonstop Play, the arrangement_hash memory pointer can lag the actual
-        // song start by several polls — Rocksmith hasn't populated it yet by the
-        // time the state machine wants to fire LogSongStart. Pre-deferral, this
-        // resulted in path="unknown" / tuning="unknown" being logged for songs
-        // with multiple playable arrangements (where the fallback heuristic can't
-        // disambiguate). With deferral, we wait up to ~5 seconds for the memory
-        // to populate before falling through to the unknown log path. Counter
-        // ticks every poll; the retry hook in DoMemoryReadout calls
-        // LogSongStartIfPossible repeatedly while we're in an in-game gameStage.
-        // ─────────────────────────────────────────────────────────────────────────
-        private int startLogDeferralCount = 0;
-        private const int START_LOG_DEFERRAL_MAX = 50; // ~5s at 100ms polling
+        // The deferral fields (startLogDeferralCount, START_LOG_DEFERRAL_MAX) were
+        // REMOVED in v0.6.5 hotfix5 along with the deferral block in
+        // LogSongStartIfPossible and the retry hook in DoMemoryReadout. Their original
+        // purpose was to wait for arrangement_hash memory to populate; with Path
+        // resolution as the new primary mechanism, there's nothing to wait for — Path
+        // is available from Rocksmith launch onward.
 
         // ─────────────────────────────────────────────────────────────────────────
         // PREV-PATH HEURISTIC (v0.6.5 hotfix)
@@ -383,7 +374,6 @@ namespace RockSnifferLib.Sniffing
                         currentSongRunWasNonstopMode = false;
                         lastLogStartedForSongID = null;
                         lastLogEndedForSongID = null;
-                        startLogDeferralCount = 0;
                     }
 
                 }
@@ -526,38 +516,15 @@ namespace RockSnifferLib.Sniffing
                     lastGameStage = newStage;
                 }
 
-                // ─────────────────────────────────────────────────────────────────────
-                // DEFERRED-START RETRY (v0.6.5)
-                //
-                // LogSongStartIfPossible has its own fire-once guard AND deferral logic
-                // — calling it repeatedly while we're in an in-game gameStage and start
-                // hasn't been logged yet is safe and idempotent. This catches the case
-                // where the natural state-machine path fired LogSongStartIfPossible too
-                // early (before arrangement_hash memory had populated) and the call
-                // returned without logging (deferred). On each subsequent poll we retry
-                // until either the arrangement resolves or the deferral times out.
-                //
-                // las_game / sa_game / nonstopplaygame are the gameStage strings observed
-                // for active gameplay in Remastered. Score Attack pause (sa_pause) is
-                // intentionally excluded since the user has reported this stage can stick
-                // — we don't want to keep retrying during a stuck pause.
-                //
-                // initTime guard (v0.6.5 hotfix3): same rationale as above — only retry
-                // after the song timer has advanced past initTime so we don't fire start
-                // during loading. The natural state machine sets initTime when songTimer
-                // first goes nonzero; we wait until songTimer crosses lowTime + 0.101s.
-                // ─────────────────────────────────────────────────────────────────────
-                if (currentCDLCDetails != null && currentCDLCDetails.IsValid() &&
-                    lastLogStartedForSongID != currentCDLCDetails.songID &&
-                    initTime != float.MaxValue &&
-                    currentMemoryReadout.songTimer > initTime)
-                {
-                    string gs = currentMemoryReadout.gameStage;
-                    if (gs == "las_game" || gs == "sa_game" || gs == "nonstopplaygame")
-                    {
-                        LogSongStartIfPossible();
-                    }
-                }
+                // The deferred-start retry hook (v0.6.5) was REMOVED in hotfix5.
+                // Original purpose: retry LogSongStartIfPossible every poll while in an
+                // in-game gameStage, in case the natural state machine fired it too
+                // early (before arrangement_hash memory had populated) and it returned
+                // deferred. With Path resolution (hotfix5) replacing arrangement_hash as
+                // the primary resolution mechanism, deferral itself is gone — Path is
+                // available from Rocksmith launch onward. The natural state machine and
+                // the nonstopplayhub→nonstopplaygame transition handler each call
+                // LogSongStartIfPossible exactly once per song, and that's sufficient.
 
                 OnMemoryReadout?.Invoke(this, new OnMemoryReadoutArgs() { memoryReadout = currentMemoryReadout });
 
@@ -823,34 +790,107 @@ namespace RockSnifferLib.Sniffing
                 return;
             }
 
-            // Find arrangement by ID
+            // STEP 1: Direct arrangementID match (v0.6.5)
+            // Best resolution — exact match. Works in LaS/SA when the arrangement_hash
+            // memory pointer has populated. Fails in Nonstop Play (pointer doesn't
+            // populate there at all).
             var arrangement = currentCDLCDetails.arrangements?
                 .FirstOrDefault(a => a.arrangementID == currentMemoryReadout.arrangementID);
 
-            // FALLBACK HEURISTIC (added in v0.6.5):
-            //
-            // If arrangementID lookup failed, attempt to recover so the song still gets logged
-            // to playthrough history. Pre-v0.6.5, a missing/junk arrangementID caused this
-            // function to silently early-return — meaning the song was never logged at all.
-            //
-            // Heuristic: if there's exactly one "playable" arrangement (non-bonus, non-alternate),
-            // use that. This handles the most common case (single-arrangement songs and most
-            // multi-arrangement songs where there's a clear "main" path). If there are multiple
-            // playable arrangements or zero, we can't disambiguate — log the song with
-            // path="unknown" / tuning="unknown" so the row still appears in history with
-            // detectable markers.
-            //
-            // Rationale for "log unknown rather than skip": missing rows are harder to notice
-            // than rows marked "unknown". The user can filter on path="unknown" later to find
-            // affected sessions, or manually correct in their SQLite.
             string fallbackReason = null;
+
+            // STEP 2: Current Path filter (v0.6.5 hotfix5)
+            //
+            // If direct arrangementID match failed, use the user's currently-selected
+            // Path (read from a stable byte pointer at the menu level — see
+            // MemoryOffsets.GetCurrentPathPointer for details). Path is reliable from
+            // Rocksmith launch onward and works in Nonstop Play, where arrangement_hash
+            // fails. It only encodes the path TYPE (Lead/Rhythm/Bass), not the specific
+            // arrangement, so we still need to filter for non-bonus/non-alternate to
+            // disambiguate when multiple arrangements share the same path type.
+            //
+            // Three sub-steps:
+            //   2a) Path-type + non-bonus + non-alternate → if exactly one match, use it.
+            //       This is the common case: most songs have one regular Bass / one
+            //       regular Lead / one regular Rhythm. Bonus/alternate filtering rules
+            //       them out so we land on the user's actual choice.
+            //   2b) Path-type, bonus/alt allowed → if exactly one match, use it.
+            //       Last resort within Path resolution. If the song has only a bonus
+            //       Lead and no regular Lead, and the user has Path=Lead, we pick the
+            //       bonus Lead — there's no other Lead option.
+            //
+            // Caveat: when bonus/alternate arrangements ARE enabled in Nonstop Play,
+            // a song can have a regular Bass AND a bonus Bass. Path=Bass matches both;
+            // we pick the regular one (2a). If the user is actually playing the bonus,
+            // we silently mismatch. This is the bonus-ambiguity problem that keeps the
+            // Nonstop Play playthrough_history / playthrough_tracker gate (hotfix4) in
+            // place even with this hotfix.
+            string currentPath = currentMemoryReadout?.currentPath;
+            if (arrangement == null && !string.IsNullOrEmpty(currentPath) &&
+                currentCDLCDetails.arrangements != null)
+            {
+                var arrangements = currentCDLCDetails.arrangements;
+
+                // 2a: Path + non-bonus + non-alternate (the common case)
+                ArrangementDetails singleRegularPathMatch = null;
+                int regularPathMatchCount = 0;
+                foreach (var arr in arrangements)
+                {
+                    if ((arr.type == currentPath || arr.name == currentPath) &&
+                        !arr.isBonusArrangement && !arr.isAlternateArrangement)
+                    {
+                        singleRegularPathMatch = arr;
+                        regularPathMatchCount++;
+                        if (regularPathMatchCount > 1) break;
+                    }
+                }
+                if (regularPathMatchCount == 1)
+                {
+                    arrangement = singleRegularPathMatch;
+                    fallbackReason = "current Path \"" + currentPath + "\" + non-bonus filter";
+                }
+                else if (regularPathMatchCount == 0)
+                {
+                    // 2b: Path-type only (bonus/alt allowed) — last resort within Path resolution
+                    ArrangementDetails singlePathMatch = null;
+                    int pathMatchCount = 0;
+                    foreach (var arr in arrangements)
+                    {
+                        if (arr.type == currentPath || arr.name == currentPath)
+                        {
+                            singlePathMatch = arr;
+                            pathMatchCount++;
+                            if (pathMatchCount > 1) break;
+                        }
+                    }
+                    if (pathMatchCount == 1)
+                    {
+                        arrangement = singlePathMatch;
+                        fallbackReason = "current Path \"" + currentPath + "\" (bonus/alt allowed)";
+                    }
+                }
+                // If still ambiguous (multiple regular OR multiple bonus matches at same
+                // path), Path resolution can't disambiguate — falls through to the legacy
+                // heuristic chain below.
+            }
+
+            // STEP 3 onwards: Legacy fallback chain (v0.6.5).
+            //
+            // Reached when both direct arrangementID match AND Path resolution failed.
+            // Mostly relevant for edge cases: Path byte didn't populate (shouldn't happen
+            // given how stable the pointer is, but defensive), or the song has multiple
+            // playable arrangements of the same type (rare but possible).
+            //
+            // Pre-hotfix5 these were the primary fallback path. Post-hotfix5 they're
+            // near-vestigial — kept for the rare edge case and as documentation of what
+            // we did before Path resolution was available.
             if (arrangement == null)
             {
                 var arrangements = currentCDLCDetails.arrangements;
 
                 if (arrangements != null && arrangements.Count > 0)
                 {
-                    // Try to pick a single non-bonus, non-alternate arrangement
+                    // STEP 3: Single-playable-arrangement heuristic
                     ArrangementDetails singlePlayable = null;
                     int playableCount = 0;
                     foreach (var arr in arrangements)
@@ -870,20 +910,9 @@ namespace RockSnifferLib.Sniffing
                     }
                     else if (playableCount > 1 && !string.IsNullOrEmpty(lastResolvedPath))
                     {
-                        // PREV-PATH HEURISTIC (v0.6.5 hotfix):
-                        // Multiple playable arrangements — try matching the last-resolved
-                        // path from a previous song. This handles the Nonstop Play case
-                        // where arrangement_hash memory hasn't populated yet AND the song
-                        // has multiple playable arrangements (so the single-playable
-                        // heuristic can't disambiguate). For users who consistently play
-                        // one arrangement type (e.g. a bassist always plays Bass), this
-                        // resolves correctly almost every time.
-                        //
-                        // lastResolvedPath is seeded at startup from SnifferRuntimeState
-                        // (sniffer_state.json), so a returning user has their previous
-                        // session's value pre-loaded for the first song of the new session.
-                        // Within-session updates also persist to disk on each successful
-                        // new resolution.
+                        // STEP 4: Prev-path heuristic (legacy — Path resolution above
+                        // supersedes this in nearly all cases). lastResolvedPath is
+                        // seeded at startup from SnifferRuntimeState (sniffer_state.json).
                         foreach (var arr in arrangements)
                         {
                             if (!arr.isBonusArrangement && !arr.isAlternateArrangement &&
@@ -896,14 +925,7 @@ namespace RockSnifferLib.Sniffing
                         }
                     }
 
-                    // DEFAULT ARRANGEMENT TYPE SETTING (v0.6.5 hotfix3):
-                    // Multiple playable arrangements AND no prior resolution to fall back
-                    // on (or prior resolution didn't match any of this song's arrangements).
-                    // Try the user's configured default in SnifferSettings.defaultArrangementType.
-                    // Lower priority than lastResolvedPath because the runtime-learned value
-                    // reflects what the user actually plays; the setting is just a hint for
-                    // first-ever-session bootstrap or for users whose most-played arrangement
-                    // is more reliable than their most-recent.
+                    // STEP 5: defaultArrangementType setting (legacy).
                     if (arrangement == null && playableCount > 1 &&
                         _settings != null &&
                         !string.IsNullOrEmpty(_settings.defaultArrangementType))
@@ -923,44 +945,18 @@ namespace RockSnifferLib.Sniffing
 
                     if (arrangement == null && arrangements.Count == 1)
                     {
-                        // Last resort: only one arrangement total (even if it's bonus/alternate, it's the only option)
+                        // STEP 6: only-arrangement-on-song (last resort, even bonus/alternate)
                         arrangement = arrangements[0];
                         fallbackReason = "only-arrangement-on-song heuristic";
                     }
                 }
             }
 
-            // DEFERRAL (v0.6.5):
-            //
-            // If neither the arrangementID lookup nor the fallback heuristic resolved an
-            // arrangement, defer logging up to ~5 seconds (50 polls) waiting for the
-            // arrangement_hash memory pointer to populate. This is critical for Nonstop
-            // Play, where Rocksmith updates arrangement_hash several polls AFTER gameStage
-            // has already transitioned to "nonstopplaygame" — meaning early calls to this
-            // function (from the state machine's SONG_PLAYING transition) would otherwise
-            // log "unknown" path/tuning before the memory has caught up.
-            //
-            // Retry calls happen in DoMemoryReadout while the user is in an in-game stage
-            // and start hasn't been logged yet. The fire-once guard above ensures we only
-            // log once when we eventually succeed.
-            //
-            // If the deferral times out (~5s with no resolved arrangement), we fall through
-            // and log with path="unknown" / tuning="unknown" so the song still gets a
-            // history record (and the existing fallback warning fires for visibility).
-            if (arrangement == null)
-            {
-                startLogDeferralCount++;
-                if (startLogDeferralCount < START_LOG_DEFERRAL_MAX)
-                {
-                    return; // Try again on next call
-                }
-                // Deferral timed out — fall through to unknown logging
-            }
-            else
-            {
-                // Arrangement resolved — clear the counter
-                startLogDeferralCount = 0;
-            }
+            // DEFERRAL was removed in hotfix5. With Path now available from Rocksmith
+            // launch onward (it's a menu-level setting, not waiting for a song to start),
+            // there's nothing useful to wait for — Path is either there or we have an
+            // edge-case failure that 5 seconds of waiting won't fix. Fall through to
+            // unknown logging immediately.
 
             string path;
             string tuning;
@@ -1163,7 +1159,6 @@ namespace RockSnifferLib.Sniffing
             // force-end) get blocked; lastLogEndedForSongID is cleared on the next
             // successful LogSongStart.
             lastLogStartedForSongID = null;
-            startLogDeferralCount = 0;
             currentSongRunArrangementID = null;
             currentSongRunPath = null;
             currentSongRunTuning = null;

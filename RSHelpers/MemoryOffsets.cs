@@ -128,4 +128,42 @@ public static class MemoryOffsets
             _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
         };
     }
+
+    /// <summary>
+    /// Get the pointer to the current Path (arrangement type) byte for the given edition.
+    /// </summary>
+    /// <remarks>
+    /// Reverse-engineered (PoizenJam, v0.6.5 hotfix5). This is a 1-byte enum at a stable
+    /// menu-level address — populated essentially from Rocksmith launch (defaults to 1
+    /// for Lead) and only mutated when the user actively switches Path in options or
+    /// song-select. Persistent through every gameStage and game state. Invariant to
+    /// bonus and alternate arrangements (only encodes the path *type*, not the specific
+    /// arrangement).
+    ///
+    /// Value mapping:
+    ///   0x01 → Lead
+    ///   0x02 → Rhythm
+    ///   0x04 → Bass
+    ///   anything else → Unknown
+    ///
+    /// Crucially, this works in Nonstop Play (where the existing arrangement_hash
+    /// pointer fails to populate). It does NOT solve the bonus/alternate ambiguity in
+    /// Nonstop — for that, the playthrough_history / playthrough_tracker Nonstop gate
+    /// added in hotfix4 stays in place.
+    /// </remarks>
+    public static (int entryAddress, int[] offsets) GetCurrentPathPointer(RSEdition edition)
+    {
+        // Per the discovery: base offset 0x00F5F570, pointer offsets [0x10, 0x1FC],
+        // read as Byte. Same +0x3080 / +0x4080 module-base shift convention as the
+        // other Remastered variants (extrapolated from the consistent pattern used by
+        // existing pointers — re-verify on Beta and Learn_And_Play before relying on
+        // them in production).
+        return edition switch
+        {
+            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5F570, [0x10, 0x1FC]),
+            RSEdition.Remastered => (0x00F5F570 + 0x3080, [0x10, 0x1FC]),
+            RSEdition.Remastered_Learn_And_Play => (0x00F5F570 + 0x4080, [0x10, 0x1FC]),
+            _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
+        };
+    }
 }
