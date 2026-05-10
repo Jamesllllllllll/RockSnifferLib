@@ -102,12 +102,24 @@ namespace RockSnifferLib.RSHelpers
                 readout.arrangementID = arrangement_hash;
             }
 
-            // GAME STATE
+            // GAME STAGE
             //
-            // This one popped up while looking for arrangement hash, seems to be a logical string representing the current game stage
-            // Can be garbled under unknown circumstances
-            // Exists in two (and probably more) locations, where only one may be valid, this tries to get either
-            // Prioritizing the one at 0x27C, because it is more human readable
+            // Static address read (v0.6.6) — see MemoryOffsets.GetCurrentMenuPointer
+            // for the discovery story and full migration notes. Briefly: replaces
+            // a pointer chain that returned garbage in several menu states (SA
+            // song-select, song-options, tuner) and silently dropped LaS / Nonstop
+            // pause stages entirely. The static buffer at module+0xF5F7C9
+            // (Remastered) is Rocksmith's canonical gameStage cell.
+            //
+            // Length >= 4 guard: kept from the prior implementation as a defense
+            // against transient sub-4-char writes during stage transitions. With
+            // the static read this is rarely if ever exercised, but harmless.
+            //
+            // KNOWN: gameStage will NOT update on pause→resume or pause→restart
+            // for any mode. This is Rocksmith engine behavior, not a reader bug.
+            // Consumers needing actual play/pause state should use `game_state`
+            // (SnifferState), which derives play/pause via timer-stall detection
+            // in Sniffer.UpdateState().
             string game_stage = MemoryHelper.ReadStringFromMemory(rsProcessHandle, FollowPointers(MemoryOffsets.GetCurrentMenuPointer(edition)));
 
             //If we got a game stage

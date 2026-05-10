@@ -417,10 +417,19 @@ namespace RockSnifferLib.Sniffing
                 // happen between consecutive Nonstop songs). gameStage is a more direct
                 // signal of what Rocksmith is actually doing.
                 //
-                // Known gameStage strings (Remastered):
-                //   Learn-A-Song:  las_songs / las_options / las_tuner / las_game / las_songreview
+                // Known gameStage strings (Remastered, post-v0.6.6 static-address reader):
+                //   Learn-A-Song:  las_songs / las_options / las_tuner / las_game /
+                //                  las_pause / las_songreview
                 //   Score Attack:  gcpre / sa_game / sa_pause / sa_songreview
-                //   Nonstop Play:  nsp_main / nonstopplaygame / nonstopplayhub
+                //   Nonstop Play:  nsp_main / nonstopplaygame / nonstopplayhub /
+                //                  nsp_pause / nsp_tuner
+                //   Other:         main / panel_bib / shop / gc_games / mp_* / etc.
+                //
+                // Note (v0.6.6): *_pause stages are now visible across all three modes,
+                // but Rocksmith does NOT update gameStage on pause→resume / pause→restart,
+                // so a stale "*_pause" reading does not imply the user is still paused.
+                // Use SnifferState (game_state) for actual play/pause status — it derives
+                // from songTimer behavior, not gameStage strings.
                 //
                 // Only the Nonstop transitions need this escape hatch — Learn-A-Song
                 // and Score Attack work correctly under the existing timer-based logic.
