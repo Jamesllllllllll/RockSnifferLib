@@ -220,4 +220,91 @@ public static class MemoryOffsets
             _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
         };
     }
+
+    /// <summary>
+    /// Get the address of the pause-menu mode byte for the given edition.
+    /// </summary>
+    /// <remarks>
+    /// Discovered (PoizenJam, v0.6.7) using Cheat Engine on Rocksmith Remastered.
+    /// A 1-byte cell at module+0xF5F5FC encoding which blocking pause-style overlay
+    /// is currently active, with the following observed value table:
+    ///
+    ///     0 — No blocking overlay. Active gameplay, main menus, song select,
+    ///         loading screens, song review screens.
+    ///     1 — Sub-overlay active. Tuner accessed FROM the pause menu, or
+    ///         tuner accessed from the main menu's Tools sub-menu, or other
+    ///         sub-prompts reached from a top-level overlay.
+    ///     2 — Top-level blocking overlay active. In-song pause menu (Resume/
+    ///         Restart/Tuner/Mixer/Exit), Mixer overlay, Restart-confirmation
+    ///         prompts, main menu's Tools overlay (the equivalent of an
+    ///         in-song pause menu accessed from main menu via SPACE).
+    ///
+    /// Critically the variable does NOT represent "is the user paused during
+    /// gameplay." It represents "is one of the blocking pause-style overlays
+    /// active" — which happens to overlap perfectly with mid-song pause when
+    /// the user is in a song, but ALSO fires for the Tools menu accessed from
+    /// outside any song. Consumers wanting "is paused during a song" should
+    /// combine this with a SnifferState (game_state) check.
+    ///
+    /// Cross-mode validated: tracks correctly in Score Attack, Learn-A-Song,
+    /// Nonstop Play, and Guitarcade minigames with no warmup gate (unlike the
+    /// earlier GCPauseManager-flag candidate, which required prior Score Attack
+    /// gameplay before becoming active).
+    ///
+    /// Survives game relaunch as a true .data-section static. Confirmed by:
+    ///   - Memory neighborhood inspection: surrounding bytes show structured
+    ///     .data patterns (ASCII string fragments, aligned small integers,
+    ///     installation-ID GUIDs at +0xC0..+0xE0 offsets) consistent with
+    ///     compiled-binary static storage rather than heap allocation.
+    ///   - Relaunch test: closing Rocksmith, reopening, re-attaching CE
+    ///     without scanning, navigating directly to the typed offset — value
+    ///     still tracks pause-menu state correctly across all modes.
+    ///   - Address neighborhood: sandwiched between two Koko-named .data
+    ///     candidates (MustBlockInputsDueToPauseMenu at +F5F545,
+    ///     EnablePauseMenu at +F5F5DB) and the previously-validated gameStage
+    ///     buffer at +F5F7C9.
+    ///
+    /// IMPORTANT design note for state-machine consumers: because value=1
+    /// (tuner-from-pause) is distinct from value=2 (pause menu) but BOTH
+    /// represent "user is in a pause sub-flow," the correct test for
+    /// "currently paused" is mode != 0, not mode == 2. This eliminates the
+    /// tuner-from-pause edge case that complicated earlier pause-detection
+    /// designs — no asymmetric flag-entry / timer-exit gymnastics needed,
+    /// since the variable itself never lies about "we are in a pause overlay"
+    /// during tuner-from-pause.
+    ///
+    /// Returned as (entryAddress, []) tuple so the existing FollowPointers
+    /// codepath in RSMemoryReader handles it uniformly — empty offsets means
+    /// the foreach loop is a no-op and the read happens at base+entry
+    /// directly, matching the same pattern used for the gameStage static read.
+    ///
+    /// EDITION SHIFTS (Beta / LaP): back-derived using the +0x3080 (Beta→
+    /// Remastered) and +0x4080 (Beta→LaP) shifts that every other pointer
+    /// in this file uses. Convention has held for all eleven previously-mapped
+    /// pointers/addresses, so very likely correct — but Beta and Learn_And_Play
+    /// values have NOT been independently verified. If those editions read
+    /// constant zero across all pause states (otherwise-working RockSniffer
+    /// behavior), check this address as the first suspect.
+    ///
+    /// Discovery credit: kokolihapihvi (upstream RockSniffer maintainer)
+    /// pointed us at the surrounding memory region by sharing two named
+    /// candidate addresses from his RE project (MustBlockInputsDueToPauseMenu,
+    /// EnablePauseMenu). Both turned out to be dead in the current Remastered
+    /// build (consistently 0 across all states), but the neighborhood inspection
+    /// they prompted led directly to this find.
+    /// </remarks>
+    /// <param name="edition"></param>
+    /// <returns>A tuple of (entry address, pointer offsets) — offsets is empty
+    /// for a direct static read.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    public static (int entryAddress, int[] offsets) GetPauseMenuModePointer(RSEdition edition)
+    {
+        return edition switch
+        {
+            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0xF5F5FC - 0x3080, []),
+            RSEdition.Remastered => (0xF5F5FC, []),
+            RSEdition.Remastered_Learn_And_Play => (0xF5F5FC + 0x1000, []),
+            _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
+        };
+    }
 }

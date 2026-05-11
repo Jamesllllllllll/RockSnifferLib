@@ -172,6 +172,40 @@ namespace RockSnifferLib.RSHelpers
                 // but defensive coding keeps a transient memory hiccup from killing the poll.
             }
 
+            // PAUSE MENU MODE (v0.6.7)
+            //
+            // Direct read of Rocksmith's pause-menu mode byte — a static .data
+            // cell at module+0xF5F5FC (Remastered) that encodes blocking-overlay
+            // depth: 0=no overlay, 1=sub-overlay (e.g. tuner-from-pause),
+            // 2=top-level overlay (pause menu, Mixer, Tools menu). See
+            // MemoryOffsets.GetPauseMenuModePointer for the full state table
+            // and discovery context.
+            //
+            // Cross-mode validated (SA, LaS, NSP, Guitarcade) and verified to
+            // survive game relaunch as a true static. Used by Sniffer.UpdateState
+            // for first-poll-instant SONG_PLAYING ↔ SONG_PAUSED transitions,
+            // replacing the prior timer-stall heuristic.
+            //
+            // Defensive try/catch around the read, same pattern as currentPath
+            // above — keeps a transient memory hiccup from killing the poll.
+            // On failure, pauseMenuMode stays at its prior value (or 0 on
+            // first poll) and the next successful poll resyncs. isPaused
+            // is always derived from pauseMenuMode in lock-step.
+            try
+            {
+                IntPtr pauseModeAddr = FollowPointers(MemoryOffsets.GetPauseMenuModePointer(edition));
+                if (pauseModeAddr != IntPtr.Zero)
+                {
+                    byte modeByte = MemoryHelper.ReadByteFromMemory(rsProcessHandle, pauseModeAddr);
+                    readout.pauseMenuMode = modeByte;
+                    readout.isPaused = modeByte != 0;
+                }
+            }
+            catch
+            {
+                // Best-effort read — leave pauseMenuMode/isPaused at their default / prior values.
+            }
+
             // NOTE DATA
             //
             // For learn a song:
@@ -210,6 +244,14 @@ namespace RockSnifferLib.RSHelpers
             // querying `prevReadout.currentPath` while in song-select would see stale data.
             prevReadout.currentPathByte = readout.currentPathByte;
             prevReadout.currentPath = readout.currentPath;
+
+            // pauseMenuMode reflects engine overlay state and can flip on user input
+            // (pause button) at any songTimer value, including songTimer == 0 during
+            // loading. Propagate every poll regardless of songTimer, same rationale
+            // as currentPath above — otherwise consumers would see stale pause state
+            // during the brief window when pause is first registered.
+            prevReadout.pauseMenuMode = readout.pauseMenuMode;
+            prevReadout.isPaused = readout.isPaused;
 
             // Always propagate arrangementID (v0.6.5):
             // The previous behavior of only updating arrangementID when songTimer > 0

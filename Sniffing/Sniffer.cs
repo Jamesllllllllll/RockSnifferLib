@@ -79,10 +79,13 @@ namespace RockSnifferLib.Sniffing
         /// where the song timer has not meaningfully advanced.
         /// </summary>
         private float lastObservedTimer = float.MinValue;
-        private int stallCount = 0;
-        private const int STALL_THRESHOLD = 5;           // consecutive stalled reads to trigger pause
-        private const float STALL_EPSILON = 0.001f;      // jitter tolerance (< 1 ms)
-        private const float END_OF_SONG_PAUSE_GUARD = 2.0f; // suppress pause detection within last N seconds of song
+        // stallCount and STALL_THRESHOLD removed in v0.6.7 — pause entry/exit now
+        // flag-driven via RSMemoryReadout.pauseMenuMode (see
+        // MemoryOffsets.GetPauseMenuModePointer). STALL_EPSILON and
+        // END_OF_SONG_PAUSE_GUARD likewise removed; the flag is authoritative
+        // regardless of timer position so end-of-song stall false-positives
+        // can't happen. lastObservedTimer is retained for diagnostic logging
+        // purposes only — no logic branches on it post-migration.
 
         // ─────────────────────────────────────────────────────────────────────────
         // SONG-RUN CONTEXT (v0.6.5)
@@ -311,7 +314,6 @@ namespace RockSnifferLib.Sniffing
                         lowTime = float.MaxValue;
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
-                        stallCount = 0;
                         lastObservedTimer = float.MinValue;
                         paused = false;
                     }
@@ -328,7 +330,6 @@ namespace RockSnifferLib.Sniffing
                         lowTime = float.MaxValue;
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
-                        stallCount = 0;
                         lastObservedTimer = float.MinValue;
                         paused = false;
 
@@ -396,15 +397,8 @@ namespace RockSnifferLib.Sniffing
                     // Update max observed timer
                     maxTime = Math.Max(maxTime, currentMemoryReadout.songTimer);
 
-                    // Stall counter: if timer hasn't meaningfully advanced, increment; otherwise reset
-                    if (Math.Abs(currentMemoryReadout.songTimer - lastObservedTimer) < STALL_EPSILON)
-                    {
-                        stallCount++;
-                    }
-                    else
-                    {
-                        stallCount = 0;
-                    }
+                    // lastObservedTimer kept updated for diagnostic logging only (v0.6.7);
+                    // no state-machine logic branches on it post-migration to flag-driven pause.
                     lastObservedTimer = currentMemoryReadout.songTimer;
                 }
 
@@ -460,8 +454,7 @@ namespace RockSnifferLib.Sniffing
                             lowTime = float.MaxValue;
                             initTime = float.MaxValue;
                             maxTime = float.MinValue;
-                            stallCount = 0;
-                            lastObservedTimer = float.MinValue;
+                                lastObservedTimer = float.MinValue;
                             paused = false;
                         }
                     }
@@ -1148,22 +1141,36 @@ namespace RockSnifferLib.Sniffing
                         lowTime = float.MaxValue;
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
-                        stallCount = 0;
                         lastObservedTimer = float.MinValue;
                         paused = false;
                         break;
                     }
 
-                    // If the song timer has stalled for enough consecutive reads, the user must have paused
-                    // Suppress near end of song � the game engine often stalls the timer briefly
-                    // during end-of-song transition (score screen prep) before reaching songLength
-                    if (stallCount >= STALL_THRESHOLD &&
-                        currentMemoryReadout.songTimer > initTime &&
-                        !(currentCDLCDetails != null &&
-                          currentMemoryReadout.songTimer >= currentCDLCDetails.songLength - END_OF_SONG_PAUSE_GUARD))
+                    // PAUSE ENTRY (v0.6.7): flag-driven via pauseMenuMode.
+                    //
+                    // Replaces the prior timer-stall heuristic. pauseMenuMode at
+                    // MemoryOffsets.GetPauseMenuModePointer encodes blocking-overlay
+                    // state: 0=no overlay, 1=sub-overlay (e.g. tuner-from-pause),
+                    // 2=top-level overlay (pause menu, restart confirmation, etc.).
+                    // Any non-zero value means the user is in a pause sub-flow.
+                    //
+                    // Detection is now first-poll instant rather than
+                    // STALL_THRESHOLD-polls delayed. The end-of-song guard previously
+                    // needed for stall detection is gone -- the flag is authoritative
+                    // regardless of timer position, so spurious timer stalls near
+                    // song completion can no longer trip false-positive pause detection.
+                    //
+                    // The initTime guard is preserved: pauseMenuMode can theoretically
+                    // become non-zero during the brief loading-screen window before
+                    // the user has actually started playing (e.g. a Tools-menu access
+                    // during a transition). Once initTime is captured (timer first
+                    // observed > 0), pause detection is enabled.
+                    if (currentMemoryReadout.isPaused &&
+                        initTime != float.MaxValue &&
+                        currentMemoryReadout.songTimer > initTime)
                     {
                         currentState = SnifferState.SONG_PAUSED;
-                        Logger.Log("Song Paused! (timer stalled at {0:F3} for {1} reads)", currentMemoryReadout.songTimer, stallCount);
+                        Logger.Log("Song Paused! (pauseMenuMode={0} at timer {1:F3})", currentMemoryReadout.pauseMenuMode, currentMemoryReadout.songTimer);
                         paused = true;
                     }
                     break;
@@ -1184,15 +1191,27 @@ namespace RockSnifferLib.Sniffing
                         lowTime = float.MaxValue;
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
-                        stallCount = 0;
                         lastObservedTimer = float.MinValue;
                         paused = false;
                     }
-                    // If songTimer is advancing again (stall counter reset), user has resumed
-                    else if (stallCount == 0 && currentMemoryReadout.songTimer > initTime)
+                    // PAUSE EXIT (v0.6.7): flag-driven via pauseMenuMode.
+                    //
+                    // The previous timer-stall heuristic required STALL_THRESHOLD polls
+                    // of timer advancement before recognizing resume, which delayed exit
+                    // detection symmetrically with entry. The flag-driven approach
+                    // recognizes resume on the first poll where pauseMenuMode returns
+                    // to 0.
+                    //
+                    // Critically, tuner-from-pause is handled correctly without any
+                    // special-casing: the engine transitions pauseMenuMode from 2
+                    // (pause menu visible) to 1 (tuner sub-overlay) when the user
+                    // enters the tuner -- still non-zero, so isPaused stays true and
+                    // this branch does not fire. Only when the user fully returns to
+                    // gameplay (mode 0) does SONG_PAUSED exit to SONG_PLAYING.
+                    else if (!currentMemoryReadout.isPaused && currentMemoryReadout.songTimer > initTime)
                     {
                         currentState = SnifferState.SONG_PLAYING;
-                        Logger.Log("Song Resumed!");
+                        Logger.Log("Song Resumed! (pauseMenuMode=0 at timer {0:F3})", currentMemoryReadout.songTimer);
                     }
                     break;
 
@@ -1210,7 +1229,6 @@ namespace RockSnifferLib.Sniffing
                         lowTime = float.MaxValue;
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
-                        stallCount = 0;
                         lastObservedTimer = float.MinValue;
                         paused = false;
                     }
