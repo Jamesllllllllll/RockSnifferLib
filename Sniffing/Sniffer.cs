@@ -1088,7 +1088,22 @@ namespace RockSnifferLib.Sniffing
             switch (currentState)
             {
                 case SnifferState.IN_MENUS:
-                    if (currentMemoryReadout.songTimer != 0)
+                    // Guard transition with gameStage check (v0.6.7) to prevent
+                    // spurious progression into SONG_SELECTED → SONG_STARTING when
+                    // RockSniffer attaches to an already-running Rocksmith process,
+                    // when Rocksmith restarts while RockSniffer is running, or when
+                    // any transient memory garbage briefly reads a non-zero songTimer
+                    // in a menu state. Without this guard, the state machine
+                    // historically marched forward through menu states based on
+                    // junk timer reads and could get stuck in SONG_STARTING.
+                    //
+                    // Only treat songTimer != 0 as a real song-start signal when
+                    // gameStage is one of the values consistent with being in (or
+                    // about to be in) a song. Sticky *_pause stages are included
+                    // because gameStage doesn't update on resume — see
+                    // IsPotentiallyPlayingGameStage for full classification.
+                    if (currentMemoryReadout.songTimer != 0 &&
+                        IsPotentiallyPlayingGameStage(currentMemoryReadout.gameStage))
                     {
                         currentState = SnifferState.SONG_SELECTED;
                     }
@@ -1116,6 +1131,32 @@ namespace RockSnifferLib.Sniffing
                     {
                         currentState = SnifferState.SONG_PLAYING;
                         LogSongStartIfPossible();
+                    }
+                    // Escape hatch (v0.6.7): user backed out of song-start before
+                    // the timer ever advanced past initTime. Without this branch,
+                    // SONG_STARTING was sticky — its only exit was the
+                    // songTimer > initTime path above, so if the user pressed
+                    // Esc during the loading screen or otherwise aborted before
+                    // gameplay began, the state machine would park in
+                    // SONG_STARTING indefinitely.
+                    //
+                    // gameStage observation is the cleanest detector here: when
+                    // the user aborts, Rocksmith transitions gameStage back to
+                    // a menu/tuner/songreview value. We deliberately do NOT
+                    // exit on *_pause gameStages (las_pause, sa_pause, nsp_pause)
+                    // because those are sticky and may be lingering from a prior
+                    // song's pause that hasn't yet been cleared by a major
+                    // Rocksmith stage transition. See IsDefinitelyMenuGameStage
+                    // for the full allowlist.
+                    //
+                    // No song-end event fires here — no song actually started, so
+                    // there is nothing to log. The state machine simply unwinds
+                    // back to IN_MENUS and the normal startup-detection logic
+                    // resumes from there.
+                    else if (IsDefinitelyMenuGameStage(currentMemoryReadout.gameStage))
+                    {
+                        Logger.Log("SONG_STARTING aborted (gameStage={0}, timer never advanced); returning to IN_MENUS", currentMemoryReadout.gameStage);
+                        currentState = SnifferState.IN_MENUS;
                     }
                     break;
 
@@ -1262,6 +1303,121 @@ namespace RockSnifferLib.Sniffing
                 {
                     Logger.Log("Current state: {0}", currentState.ToString());
                 }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // gameStage classification helpers (v0.6.7)
+        //
+        // The state machine's startup transitions (IN_MENUS → SONG_SELECTED, and
+        // the SONG_STARTING → IN_MENUS escape hatch) need to distinguish three
+        // categories of gameStage values:
+        //
+        //   1. "Potentially playing"  → las_game, sa_game, nonstopplaygame,
+        //                                las_pause, sa_pause, nsp_pause
+        //      These either mean the user IS in a song, or MIGHT be in a song
+        //      with a sticky *_pause gameStage that hasn't cleared yet (because
+        //      Rocksmith only clears *_pause on major stage transitions like
+        //      song-end or menu navigation, NOT on resume from pause).
+        //
+        //   2. "Definitely menu"      → mainmenu, gcpre, learnasong, scoreattack,
+        //                                nonstopplay, nsp_main, *_songs,
+        //                                *_options, *_tuner, *_songreview,
+        //                                panel_*, shop, gc_*, gcade, ge_*,
+        //                                mp_*, sm_*
+        //      The user is clearly NOT actively playing a song. Includes
+        //      *_tuner (whether reached from a pause menu or directly from a
+        //      song-select menu — either way, not actively playing) and
+        //      *_songreview (the post-song summary).
+        //
+        //   3. Unknown / unclassified → anything not on either list above
+        //      Default to safest behavior: treat as menu for entry guards
+        //      (don't progress to SONG_SELECTED), but don't treat as menu for
+        //      the SONG_STARTING escape (don't drop out on an unknown value
+        //      that might be a real song-start state we haven't catalogued).
+        //
+        // Stages are compared as exact strings rather than prefix matches to
+        // keep classification deterministic. New Rocksmith gameStages we
+        // encounter later can be added here as we identify them — the safe
+        // default for unknowns is to NOT make state machine decisions based
+        // on the gameStage value.
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// True if gameStage indicates the user is potentially in a song —
+        /// either actively playing or in a sticky *_pause state.
+        /// Used to gate IN_MENUS → SONG_SELECTED transitions, preventing
+        /// spurious progression based on transient memory garbage during
+        /// Rocksmith startup, RockSniffer attach, or any menu navigation
+        /// where songTimer briefly reads non-zero.
+        /// </summary>
+        private static bool IsPotentiallyPlayingGameStage(string gameStage)
+        {
+            if (string.IsNullOrEmpty(gameStage)) return false;
+            switch (gameStage)
+            {
+                case "las_game":
+                case "sa_game":
+                case "nonstopplaygame":
+                // *_pause stages included because gameStage doesn't reset on
+                // resume — the user could be back in active gameplay with a
+                // stale *_pause reading lingering until song-end / menu-nav.
+                case "las_pause":
+                case "sa_pause":
+                case "nsp_pause":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// True if gameStage is definitely a menu / tuner / songreview state,
+        /// indicating the user is not actively playing a song.
+        /// Used by the SONG_STARTING escape hatch to detect when the user
+        /// has aborted song-start before the timer ever advanced.
+        ///
+        /// Deliberately excludes *_pause stages, which are sticky and may be
+        /// lingering from a prior song's pause that hasn't been cleared by a
+        /// major Rocksmith stage transition yet.
+        ///
+        /// Unknown stages return false (conservative default — better to stay
+        /// in SONG_STARTING and let the timer-based path resolve than to
+        /// bail out on an unrecognized value).
+        /// </summary>
+        private static bool IsDefinitelyMenuGameStage(string gameStage)
+        {
+            if (string.IsNullOrEmpty(gameStage)) return false;
+            switch (gameStage)
+            {
+                // Top-level menus
+                case "mainmenu":
+                case "gcpre":
+                case "learnasong":
+                case "scoreattack":
+                case "nonstopplay":
+                case "nsp_main":
+                // Per-mode menus (song select, options)
+                case "las_songs":
+                case "las_options":
+                // Tuners (whether reached from a song-select menu or from a
+                // pause menu — both treated as "not actively playing")
+                case "las_tuner":
+                case "nsp_tuner":
+                // Song-end summary screens
+                case "las_songreview":
+                case "sa_songreview":
+                // Other panels / menus
+                case "panel_bib":
+                case "shop":
+                case "gcade":
+                    return true;
+                default:
+                    // Unknown stages: don't bail out from SONG_STARTING. If a
+                    // new "definitely menu" gameStage appears that's not on
+                    // this list, it'll be added in a future release once
+                    // we've observed and classified it.
+                    return false;
             }
         }
     }
