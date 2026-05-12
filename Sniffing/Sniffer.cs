@@ -87,6 +87,31 @@ namespace RockSnifferLib.Sniffing
         // can't happen. lastObservedTimer is retained for diagnostic logging
         // purposes only — no logic branches on it post-migration.
 
+        /// <summary>
+        /// Snapshot of songTimer at the moment SONG_PAUSED was entered (v0.6.7).
+        ///
+        /// Used by the SONG_PAUSED → SONG_PLAYING resume detection to
+        /// distinguish "user resumed the song" (timer moves) from "user
+        /// hit Exit from the pause menu" (timer stays frozen at the
+        /// pause-point until the engine transitions back to menus).
+        ///
+        /// Without this disambiguation, the moment the user hits Exit
+        /// from the pause menu, pauseMenuMode flips to 0 (engine clears
+        /// the overlay) while songTimer is still frozen above initTime —
+        /// causing a brief spurious SONG_PAUSED → SONG_PLAYING flicker
+        /// before the songTimer-drops-to-0 branch fires SONG_PAUSED →
+        /// IN_MENUS one or two polls later.
+        ///
+        /// Resume is now detected on `songTimer != pauseTimerSnapshot`
+        /// (any movement away from the pause point — Rocksmith may
+        /// rewind ~0.5s on resume for "catch up", so != is correct
+        /// rather than >). Real resume → timer moves → resume fires
+        /// on the next poll. Exit-from-pause → timer stays frozen
+        /// until menu transition → resume never fires → the existing
+        /// songTimer <= initTime branch catches the IN_MENUS transition.
+        /// </summary>
+        private float pauseTimerSnapshot = float.MinValue;
+
         // ─────────────────────────────────────────────────────────────────────────
         // SONG-RUN CONTEXT (v0.6.5)
         //
@@ -315,6 +340,7 @@ namespace RockSnifferLib.Sniffing
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
                         lastObservedTimer = float.MinValue;
+                        pauseTimerSnapshot = float.MinValue;
                         paused = false;
                     }
 
@@ -331,6 +357,7 @@ namespace RockSnifferLib.Sniffing
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
                         lastObservedTimer = float.MinValue;
+                        pauseTimerSnapshot = float.MinValue;
                         paused = false;
 
                         // Reset song-run context and fire-once guards for the new song
@@ -455,6 +482,7 @@ namespace RockSnifferLib.Sniffing
                             initTime = float.MaxValue;
                             maxTime = float.MinValue;
                                 lastObservedTimer = float.MinValue;
+                                pauseTimerSnapshot = float.MinValue;
                             paused = false;
                         }
                     }
@@ -1183,6 +1211,7 @@ namespace RockSnifferLib.Sniffing
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
                         lastObservedTimer = float.MinValue;
+                        pauseTimerSnapshot = float.MinValue;
                         paused = false;
                         break;
                     }
@@ -1213,6 +1242,9 @@ namespace RockSnifferLib.Sniffing
                         currentState = SnifferState.SONG_PAUSED;
                         Logger.Log("Song Paused! (pauseMenuMode={0} at timer {1:F3})", currentMemoryReadout.pauseMenuMode, currentMemoryReadout.songTimer);
                         paused = true;
+                        // Snapshot songTimer for resume-vs-exit disambiguation
+                        // (see pauseTimerSnapshot field docs above for rationale).
+                        pauseTimerSnapshot = currentMemoryReadout.songTimer;
                     }
                     break;
 
@@ -1233,26 +1265,43 @@ namespace RockSnifferLib.Sniffing
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
                         lastObservedTimer = float.MinValue;
+                        pauseTimerSnapshot = float.MinValue;
                         paused = false;
                     }
-                    // PAUSE EXIT (v0.6.7): flag-driven via pauseMenuMode.
+                    // PAUSE EXIT (v0.6.7): flag-driven via pauseMenuMode + timer-movement guard.
                     //
-                    // The previous timer-stall heuristic required STALL_THRESHOLD polls
-                    // of timer advancement before recognizing resume, which delayed exit
-                    // detection symmetrically with entry. The flag-driven approach
-                    // recognizes resume on the first poll where pauseMenuMode returns
-                    // to 0.
+                    // Migrated from the v0.6.6 timer-stall heuristic which required
+                    // STALL_THRESHOLD polls of timer advancement before recognizing
+                    // resume. The flag-driven approach recognizes resume on the
+                    // first poll where pauseMenuMode returns to 0 AND the songTimer
+                    // has moved from where it was at pause-entry.
                     //
-                    // Critically, tuner-from-pause is handled correctly without any
-                    // special-casing: the engine transitions pauseMenuMode from 2
-                    // (pause menu visible) to 1 (tuner sub-overlay) when the user
-                    // enters the tuner -- still non-zero, so isPaused stays true and
-                    // this branch does not fire. Only when the user fully returns to
-                    // gameplay (mode 0) does SONG_PAUSED exit to SONG_PLAYING.
-                    else if (!currentMemoryReadout.isPaused && currentMemoryReadout.songTimer > initTime)
+                    // The songTimer != pauseTimerSnapshot guard is critical: when
+                    // the user hits Exit from the pause menu, pauseMenuMode flips
+                    // to 0 (engine clears the overlay) while songTimer is still
+                    // frozen at the pause-point. Without the timer-movement check,
+                    // the !isPaused condition alone would fire a spurious
+                    // SONG_PAUSED → SONG_PLAYING transition for 1-2 polls until
+                    // songTimer drops to 0 and the exit-detection branch above
+                    // catches it. The snapshot ensures real resume (timer
+                    // re-advances, possibly with a small rewind for "catch up")
+                    // is distinguished from exit (timer stays frozen until the
+                    // engine fully transitions back to menus).
+                    //
+                    // Tuner-from-pause is handled correctly without special-
+                    // casing: the engine transitions pauseMenuMode from 2 (pause
+                    // menu visible) to 1 (tuner sub-overlay) when the user enters
+                    // the tuner — still non-zero, so isPaused stays true and this
+                    // branch never evaluates. Only when the user fully returns to
+                    // gameplay (mode 0) AND the timer demonstrates movement does
+                    // SONG_PAUSED exit to SONG_PLAYING.
+                    else if (!currentMemoryReadout.isPaused &&
+                             currentMemoryReadout.songTimer > initTime &&
+                             currentMemoryReadout.songTimer != pauseTimerSnapshot)
                     {
                         currentState = SnifferState.SONG_PLAYING;
-                        Logger.Log("Song Resumed! (pauseMenuMode=0 at timer {0:F3})", currentMemoryReadout.songTimer);
+                        Logger.Log("Song Resumed! (pauseMenuMode=0 at timer {0:F3}, was paused at {1:F3})", currentMemoryReadout.songTimer, pauseTimerSnapshot);
+                        pauseTimerSnapshot = float.MinValue;
                     }
                     break;
 
@@ -1271,6 +1320,7 @@ namespace RockSnifferLib.Sniffing
                         initTime = float.MaxValue;
                         maxTime = float.MinValue;
                         lastObservedTimer = float.MinValue;
+                        pauseTimerSnapshot = float.MinValue;
                         paused = false;
                     }
                     break;
