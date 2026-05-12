@@ -115,6 +115,43 @@ namespace RockSnifferLib.RSHelpers
                 }
             }
 
+            // MODE (v0.6.8)
+            //
+            // Derive readout.mode from gameStage. The pre-v0.6.8 behavior set mode
+            // from whichever note-data pointer chain resolved (LEARNASONG when LaS
+            // chain matched, SCOREATTACK when SA chain matched, UNKNOWN otherwise),
+            // which had three problems:
+            //   1. Nonstop Play uses the same note-data subsystem as LaS internally,
+            //      so NSP gameplay reported "LEARNASONG" indistinguishable from LaS.
+            //   2. Menu states (mainmenu, song-select, song-review, etc.) reported
+            //      "UNKNOWN" because no note-data pointer resolves there.
+            //   3. The classification was implicitly tied to note-data resolution,
+            //      coupling two unrelated concerns.
+            //
+            // v0.6.8 derives mode from gameStage, which is reliable across all
+            // states (static-address read since v0.6.6) and gives every gameStage
+            // a meaningful classification. See DeriveModeFromGameStage for the
+            // full mapping table.
+            //
+            // SPECIAL CASE — bare "tuner" gameStage:
+            // The bare "tuner" stage fires whenever the universal tuner is invoked
+            // from a parent context (pause menu of any mode, main menu, Session
+            // mode, etc.) — distinct from the mode-specific tuners (las_tuner,
+            // nsp_tuner, scoreattack_presongtuner, getuner, pregametuner,
+            // guitarcade_tuner) that trigger between menu and gameplay if tuning
+            // is needed. Mode-specific tuners are classified under their parent
+            // mode by DeriveModeFromGameStage. The bare "tuner" is stateless from
+            // the gameStage alone — to give consumers a useful mode value, we
+            // persist whatever readout.mode was on the previous poll (effectively
+            // "ignore tuner as a state transition for mode-classification purposes").
+            // Edge case: if the very first observed gameStage after RockSniffer
+            // attaches is the bare tuner, readout.mode starts at UNKNOWN and stays
+            // there until the user navigates away — graceful degradation.
+            if (!string.Equals(readout.gameStage, "tuner", StringComparison.OrdinalIgnoreCase))
+            {
+                readout.mode = DeriveModeFromGameStage(readout.gameStage);
+            }
+
             // ARRANGEMENT ID
             //
             // Dispatch by gameStage (v0.6.8). Two memory chains expose arrangement-id
@@ -283,10 +320,13 @@ namespace RockSnifferLib.RSHelpers
             if (!ReadNoteData(FollowPointers(MemoryOffsets.GetLearnASongNoteDataPointer(edition))))
             {
                 //Score attack
-                if (!ReadScoreAttackNoteData(FollowPointers(MemoryOffsets.GetScoreAttackNoteDataPointer(edition))))
-                {
-                    readout.mode = RSMode.UNKNOWN;
-                }
+                ReadScoreAttackNoteData(FollowPointers(MemoryOffsets.GetScoreAttackNoteDataPointer(edition)));
+                // (v0.6.8) The legacy `readout.mode = RSMode.UNKNOWN` fallback when
+                // neither note-data chain resolved was removed. Mode is no longer
+                // tied to note-data resolution — it's derived from gameStage by
+                // DeriveModeFromGameStage in DoReadout. Note-data dispatch here
+                // just decides which struct shape to read; UNKNOWN as a fallback
+                // would now incorrectly clobber a gameStage-derived menu mode.
             }
 
             //Copy over everything when a song is running
@@ -357,6 +397,149 @@ namespace RockSnifferLib.RSHelpers
                 }
             }
             return true;
+        }
+
+        /// <summary>
+        /// Classifies a Rocksmith gameStage string into an RSMode value (v0.6.8).
+        ///
+        /// gameStage is the canonical source of truth for what the user is currently
+        /// doing in the game (see MemoryOffsets.GetCurrentMenuPointer for the read).
+        /// This classifier maps the observed gameStages into mode buckets that
+        /// addons and downstream consumers can reason about without needing to know
+        /// every individual stage name.
+        ///
+        /// MAPPING TABLE (exact-match first, then prefix fallback):
+        ///
+        ///   LEARNASONG
+        ///     exact: learnasong, las_songs, las_options, las_tuner,
+        ///            las_game, las_pause, las_songreview
+        ///
+        ///   SCOREATTACK
+        ///     exact: scoreattack, panel_bib, scoreattack_presongtuner,
+        ///            sa_game, sa_pause, sa_songreview
+        ///
+        ///   GUITARCADE  (Score Attack is conceptually a subset of Guitarcade,
+        ///                but classified separately above when the user is in
+        ///                an SA-specific stage; Guitarcade catches the hub and
+        ///                its other minigames)
+        ///     exact: gcpre, gcade, gcade_game, guitarcade_tuner
+        ///     prefix: gc_
+        ///
+        ///   NONSTOPPLAY
+        ///     exact: nonstopplay, nsp_main, nonstopplayhub, nsp_tuner,
+        ///            nonstopplaygame, nsp_pause
+        ///
+        ///   SESSION
+        ///     prefix: sm_   (e.g. sm_game, sm_pause, sm_bandsettings)
+        ///
+        ///   LESSONS
+        ///     exact: getuner, pregametuner
+        ///     prefix: ge_   (e.g. ge_techniquehub, ge_game, ge_pause)
+        ///
+        ///   MULTIPLAYER  (full multiplayer support is a larger future effort —
+        ///                 multiple user-note-data and per-user arrangements
+        ///                 to track. This classification is a tag only.)
+        ///     exact: split_game
+        ///     prefix: mp_, duet_, h2h_
+        ///
+        ///   MENU  (top-level / utility screens not associated with any single
+        ///          gameplay mode)
+        ///     exact: titlescreen, profileselect, main, mainmenu, statsmenu,
+        ///            shop, contentpanelchord, sidelist
+        ///     prefix: tonedesigner
+        ///
+        ///   UNKNOWN  — everything else (defensive default)
+        ///
+        /// CASE-INSENSITIVITY: the input is lowercased once at the top of this
+        /// method. The match-tables below are written in lowercase. Rocksmith's
+        /// observed gameStages are always lowercase in practice, but the
+        /// normalization protects against any future build / mod variation.
+        ///
+        /// SPECIAL CASE — bare "tuner": NOT handled here. The bare-tuner stage
+        /// is meant to persist whatever the prior mode was (see DoReadout for
+        /// the wrapper logic). If "tuner" reaches this method (via some future
+        /// call site that doesn't apply the special case), it falls through
+        /// to UNKNOWN as a defensive default.
+        /// </summary>
+        private static RSMode DeriveModeFromGameStage(string gameStage)
+        {
+            if (string.IsNullOrEmpty(gameStage))
+            {
+                return RSMode.UNKNOWN;
+            }
+
+            string gs = gameStage.ToLowerInvariant();
+
+            switch (gs)
+            {
+                // LEARNASONG
+                case "learnasong":
+                case "las_songs":
+                case "las_options":
+                case "las_tuner":
+                case "las_game":
+                case "las_pause":
+                case "las_songreview":
+                    return RSMode.LEARNASONG;
+
+                // SCOREATTACK
+                case "scoreattack":
+                case "panel_bib":
+                case "scoreattack_presongtuner":
+                case "sa_game":
+                case "sa_pause":
+                case "sa_songreview":
+                    return RSMode.SCOREATTACK;
+
+                // GUITARCADE (also caught by gc_ prefix below for minigame variants)
+                case "gcpre":
+                case "gcade":
+                case "gcade_game":
+                case "guitarcade_tuner":
+                    return RSMode.GUITARCADE;
+
+                // NONSTOPPLAY
+                case "nonstopplay":
+                case "nsp_main":
+                case "nonstopplayhub":
+                case "nsp_tuner":
+                case "nonstopplaygame":
+                case "nsp_pause":
+                    return RSMode.NONSTOPPLAY;
+
+                // LESSONS (also caught by ge_ prefix below)
+                case "getuner":
+                case "pregametuner":
+                    return RSMode.LESSONS;
+
+                // MULTIPLAYER (also caught by mp_/duet_/h2h_ prefixes below)
+                case "split_game":
+                    return RSMode.MULTIPLAYER;
+
+                // MENU (also caught by tonedesigner prefix below)
+                case "titlescreen":
+                case "profileselect":
+                case "main":
+                case "mainmenu":
+                case "statsmenu":
+                case "shop":
+                case "contentpanelchord":
+                case "sidelist":
+                    return RSMode.MENU;
+            }
+
+            // Prefix matches (after exact-match fall-through).
+            // Each family's exact members are listed in the switch above for
+            // documentation visibility; the prefix catches any unenumerated
+            // member of the same family (e.g. new minigame variants, new
+            // session-mode sub-screens, etc.).
+            if (gs.StartsWith("gc_")) return RSMode.GUITARCADE;
+            if (gs.StartsWith("sm_")) return RSMode.SESSION;
+            if (gs.StartsWith("ge_")) return RSMode.LESSONS;
+            if (gs.StartsWith("mp_") || gs.StartsWith("duet_") || gs.StartsWith("h2h_")) return RSMode.MULTIPLAYER;
+            if (gs.StartsWith("tonedesigner")) return RSMode.MENU;
+
+            return RSMode.UNKNOWN;
         }
 
         private IntPtr FollowPointers((int entryAddress, int[] offsets) tuple)
@@ -466,8 +649,11 @@ namespace RockSnifferLib.RSHelpers
                 return false;
             }
 
-            //Assign mode
-            readout.mode = RSMode.LEARNASONG;
+            // (v0.6.8) The legacy `readout.mode = RSMode.LEARNASONG` write here was
+            // removed: mode is now derived from gameStage by DeriveModeFromGameStage
+            // (see DoReadout). This method continues to read the LaS note-data struct,
+            // but mode classification is no longer coupled to which note-data pointer
+            // happened to resolve in this poll.
 
             //Read note data
             readout.noteData = MemoryHelper.ReadStructureFromMemory<LearnASongNoteData>(rsProcessHandle, structAddress);
@@ -490,7 +676,10 @@ namespace RockSnifferLib.RSHelpers
                 return false;
             }
 
-            readout.mode = RSMode.SCOREATTACK;
+            // (v0.6.8) The legacy `readout.mode = RSMode.SCOREATTACK` write here was
+            // removed for the same reason as in ReadNoteData. SA note-data continues
+            // to be read for the note-data struct; mode is now set by
+            // DeriveModeFromGameStage in DoReadout.
 
             //Read note data
             readout.noteData = MemoryHelper.ReadStructureFromMemory<ScoreAttackNoteData>(rsProcessHandle, structAddress);
