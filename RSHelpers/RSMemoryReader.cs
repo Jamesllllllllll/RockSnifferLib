@@ -355,6 +355,19 @@ namespace RockSnifferLib.RSHelpers
             prevReadout.pauseMenuMode = readout.pauseMenuMode;
             prevReadout.isPaused = readout.isPaused;
 
+            // Always propagate mode (v0.6.8):
+            // Pre-v0.6.8, mode was set inside ReadNoteData / ReadScoreAttackNoteData
+            // and only reached prevReadout via the in-song CopyTo block above
+            // (gated on songTimer > 0). That was sufficient when mode was only
+            // meaningful during gameplay. v0.6.8 derives mode from gameStage
+            // and gives every gameStage (menus, song-select, transitions, etc.)
+            // a meaningful classification — so mode now needs the same always-
+            // propagate treatment that gameStage / currentPath / pauseMenuMode
+            // already get. Without this, prevReadout.mode would retain the last
+            // in-song value through every menu state until the next gameplay
+            // session, defeating the entire point of the v0.6.8 redesign.
+            prevReadout.mode = readout.mode;
+
             // Always propagate arrangementID (v0.6.5):
             // The previous behavior of only updating arrangementID when songTimer > 0
             // caused two problems:
