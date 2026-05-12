@@ -80,29 +80,12 @@ namespace RockSnifferLib.RSHelpers
             // SONG TIMER
             ReadSongTimer(FollowPointers(MemoryOffsets.GetSongTimerPointer(edition)));
 
-            // ARRANGEMENT HASH
-            //
-            // This is set to the arrangement persistent id while playing a song.
-            //
-            // VALIDATION (added in v0.6.5):
-            // The memory pointer for arrangement_hash leaks junk values when not initialized
-            // (e.g. song titles like "Fear Inoculum", album-art URN strings like
-            // "urn:image:dds:album_...", etc.) — leftover bytes from whatever previously occupied
-            // that memory region. Real arrangement IDs are 32-character lowercase or uppercase
-            // hex MD5 hashes. We reject anything that doesn't match that shape so the JS layer
-            // doesn't have to guess whether it's looking at a hash or garbage.
-            //
-            // Stale values (a valid 32-hex hash from the *previous* song persisting into the
-            // current song's polls) are NOT caught here — they pass format validation. Those
-            // are handled at the Sniffer.cs layer where we have access to the current song's
-            // arrangement list and can cross-reference.
-            string arrangement_hash = MemoryHelper.ReadStringFromMemory(rsProcessHandle, FollowPointers(MemoryOffsets.GetArrangementHashPointer(edition)));
-            if (IsValidArrangementHash(arrangement_hash))
-            {
-                readout.arrangementID = arrangement_hash;
-            }
-
             // GAME STAGE
+            //
+            // (Moved above ARRANGEMENT ID in v0.6.8 — the arrangement-id read now
+            // dispatches by gameStage, so gameStage must be resolved first. Pre-v0.6.8
+            // these two blocks were in the reverse order; no semantic change beyond
+            // the dispatch requirement.)
             //
             // Static address read (v0.6.6) — see MemoryOffsets.GetCurrentMenuPointer
             // for the discovery story and full migration notes. Briefly: replaces
@@ -130,6 +113,85 @@ namespace RockSnifferLib.RSHelpers
                 {
                     readout.gameStage = game_stage;
                 }
+            }
+
+            // ARRANGEMENT ID
+            //
+            // Dispatch by gameStage (v0.6.8). Two memory chains expose arrangement-id
+            // data in different states:
+            //
+            //   PLAY_arrID chain (v0.6.8 — MemoryOffsets.GetPlayArrIDPointer):
+            //     Reads a 16-byte raw GUID in Microsoft LE layout, converts to the
+            //     standard 32-char uppercase hex form via
+            //         new Guid(bytes).ToString("N").ToUpperInvariant()
+            //     for comparison against songDetails.arrangements[].arrangementID.
+            //     Used for:
+            //       las_game / las_pause        — Learn-A-Song gameplay and pause
+            //       nonstopplaygame / nsp_pause — Nonstop Play gameplay and pause
+            //     For LaS the chain is interchangeable with arrangement_hash (cross-
+            //     validated identical output during discovery) and v0.6.8 consolidates
+            //     on it. For Nonstop this is the v0.6.8 fix target — it finally
+            //     provides per-arrangement resolution in Nonstop, where the legacy
+            //     arrangement_hash chain never populated.
+            //
+            //   arrangement_hash chain (legacy — MemoryOffsets.GetArrangementHashPointer):
+            //     Reads a 32-char ASCII hex string directly from memory. Used for:
+            //       sa_game / sa_pause — Score Attack has its own subsystem; PLAY_arrID
+            //                            does NOT track it. The legacy chain handles
+            //                            SA correctly and must remain in use.
+            //       All other gameStages — preserves pre-v0.6.8 behavior in menu /
+            //                              song-select / song-review / transition
+            //                              states. May return junk or stale values
+            //                              in those states; filtered the same way as
+            //                              in v0.6.7 (see VALIDATION below). Worth
+            //                              revisiting in a future cleanup pass once
+            //                              PLAY_arrID has soaked in the field, but
+            //                              explicitly out of scope for v0.6.8.
+            //
+            // FORMAT VALIDATION (v0.6.5, retained):
+            // IsValidArrangementHash rejects null/empty/wrong-length strings and any
+            // non-hex character. Catches structural garbage from either chain — for
+            // arrangement_hash this is the longstanding case of un-initialized memory
+            // returning song titles or album-art URN fragments; for PLAY_arrID it
+            // catches all-zero or unresolved-chain reads (e.g. between songs in
+            // Nonstop carousel where the chain may resolve but the cell isn't
+            // populated yet).
+            //
+            // CANDIDATE VALIDATION (v0.6.5, at Sniffer.cs lines 394-410, unchanged):
+            // Cross-references readout.arrangementID against currentCDLCDetails.
+            // arrangements[] and nulls it on no-match. Catches format-valid but
+            // song-mismatched IDs (stale values from previously-played or browsed
+            // songs persisting in the read cell). Chain-agnostic — applies equally
+            // to both PLAY_arrID and arrangement_hash output, because both produce
+            // 32-char hex strings consumed identically downstream.
+            //
+            // PERSISTENCE: readout.arrangementID is persistent across DoReadout calls
+            // until either (a) the songID changes (resetting it to null at the top of
+            // DoReadout) or (b) a fresh read here passes IsValidArrangementHash and
+            // overwrites it. On a bad read either chain produces null/invalid; the
+            // field retains its prior good value and the next poll re-attempts. Same
+            // "fail then retry" pattern as v0.6.7.
+            bool usePlayArrIDChain = readout.gameStage == "las_game"
+                                  || readout.gameStage == "las_pause"
+                                  || readout.gameStage == "nonstopplaygame"
+                                  || readout.gameStage == "nsp_pause";
+
+            string resolved_arrangement_id;
+            if (usePlayArrIDChain)
+            {
+                resolved_arrangement_id = ReadPlayArrIDFromMemory(
+                    FollowPointers(MemoryOffsets.GetPlayArrIDPointer(edition)));
+            }
+            else
+            {
+                resolved_arrangement_id = MemoryHelper.ReadStringFromMemory(
+                    rsProcessHandle,
+                    FollowPointers(MemoryOffsets.GetArrangementHashPointer(edition)));
+            }
+
+            if (IsValidArrangementHash(resolved_arrangement_id))
+            {
+                readout.arrangementID = resolved_arrangement_id;
             }
 
             // CURRENT PATH (v0.6.5 hotfix5)
@@ -336,6 +398,57 @@ namespace RockSnifferLib.RSHelpers
         {
             //Read float from memory and assign field on readout
             readout.songTimer = MemoryHelper.ReadFloatFromMemory(rsProcessHandle, timerAddress);
+        }
+
+        /// <summary>
+        /// Reads 16 raw bytes from the PLAY_arrID chain (v0.6.8) and converts them
+        /// to the canonical 32-char uppercase hex string format that matches the
+        /// layout of songDetails.arrangements[].arrangementID.
+        ///
+        /// The bytes are interpreted as a Microsoft GUID — first 3 fields in
+        /// little-endian byte order, last 8 bytes sequential — via the .NET
+        /// Guid(byte[]) constructor. ToString("N") returns the GUID as 32 hex
+        /// chars with no separators; ToUpperInvariant normalizes case for the
+        /// case-sensitive cross-reference at Sniffer.cs lines 394-410.
+        ///
+        /// Returns null on:
+        ///   - IntPtr.Zero from FollowPointers (chain broken — should not happen
+        ///     in the four dispatched gameStages where the chain has been validated
+        ///     stable, but defensively handled to keep failures non-fatal).
+        ///   - Any exception during the byte read or GUID construction. Guarded
+        ///     defensively for parity with the v0.6.7 currentPath and pauseMenuMode
+        ///     reads — under normal operation ReadBytesFromMemory always returns a
+        ///     16-byte buffer and new Guid(byte[16]) does not throw, so this catch
+        ///     is for transient memory hiccups during process tear-down or attach
+        ///     races, not expected steady-state behavior.
+        ///
+        /// A null return causes DoReadout to leave readout.arrangementID at its
+        /// prior value (existing v0.6.5 "fail then retry on next poll" semantics
+        /// from the conditional IsValidArrangementHash assignment).
+        /// </summary>
+        private string ReadPlayArrIDFromMemory(IntPtr address)
+        {
+            if (address == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            try
+            {
+                byte[] bytes = MemoryHelper.ReadBytesFromMemory(rsProcessHandle, address, 16);
+                if (bytes == null || bytes.Length != 16)
+                {
+                    return null;
+                }
+                return new Guid(bytes).ToString("N").ToUpperInvariant();
+            }
+            catch
+            {
+                // Best-effort read — null return leaves readout.arrangementID at its
+                // prior value, next poll retries. Same defensive pattern as currentPath
+                // and pauseMenuMode reads above.
+                return null;
+            }
         }
 
         private bool ReadNoteData(IntPtr structAddress)

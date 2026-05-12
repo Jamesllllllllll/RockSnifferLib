@@ -307,4 +307,97 @@ public static class MemoryOffsets
             _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
         };
     }
+
+    /// <summary>
+    /// Get the pointer to the currently-loaded arrangement GUID (PLAY_arrID) for the given edition.
+    /// </summary>
+    /// <remarks>
+    /// Reverse-engineered (PoizenJam, v0.6.8) via Cheat Engine on Rocksmith Remastered.
+    /// A 16-byte cell holding the currently-loaded arrangement's GUID in Microsoft
+    /// little-endian layout (first 3 fields byte-swapped, last 8 bytes sequential).
+    /// Read through a 5-deep pointer chain rooted at the same "stable singleton manager
+    /// pointers" entry address as the existing arrangement_hash chain — the two chains
+    /// differ only in their offset sequences, not their entry point (both Beta-base
+    /// 0x00F5C5AC, both Remastered base 0xF5F62C = 0xF5C5AC + 0x3080).
+    ///
+    /// The 16 raw bytes convert to the standard 32-char uppercase hex form via
+    ///     new Guid(bytes).ToString("N").ToUpperInvariant()
+    /// matching the format of songDetails.arrangements[].arrangementID for direct
+    /// case-sensitive comparison.
+    ///
+    /// STATE COVERAGE:
+    ///   las_game / las_pause          ✓ holds the currently-playing arrangement GUID
+    ///   nonstopplaygame / nsp_pause   ✓ same — this is the v0.6.8 fix target.
+    ///                                   Nonstop Play was the long-standing gap where
+    ///                                   arrangement_hash never populated; PLAY_arrID
+    ///                                   finally provides per-arrangement resolution
+    ///                                   in Nonstop, distinguishing bonus/alternate
+    ///                                   arrangements where Path-byte fallback could
+    ///                                   not (see Sniffer.cs arrangement resolution
+    ///                                   STEP 1 + STEP 2 for context).
+    ///   Nonstop carousel / nsp_tuner  ✗ not populated — the chain may resolve but
+    ///                                   the cell isn't valid until song-load proper.
+    ///   sa_game / sa_pause            ✗ Score Attack has its own subsystem. The
+    ///                                   existing arrangement_hash chain handles SA
+    ///                                   correctly and must remain in use for those
+    ///                                   gameStages — see RSMemoryReader dispatch.
+    ///   Menus, transitions, songreview ✗ not reliable.
+    ///
+    /// The chain populates the moment a song starts loading (i.e. when the user
+    /// advances past the tuner, or when the song is selected if no tuning needed)
+    /// and remains valid throughout song play. Across both LaS and Nonstop modes
+    /// the same chain handles gameplay and pause, including the pause-after-resume
+    /// sticky-state behavior documented for gameStage (see GetCurrentMenuPointer
+    /// remarks for that quirk — it does not affect PLAY_arrID, which is per-song).
+    ///
+    /// EQUIVALENCE WITH arrangement_hash (LaS only):
+    /// In LaS gameplay the GUID-converted output of this chain matches the ASCII hex
+    /// string output of the arrangement_hash chain byte-for-byte (cross-validated
+    /// during discovery by reading both chains simultaneously). They are interchangeable
+    /// for LaS resolution. v0.6.8 consolidates on PLAY_arrID for LaS because (a) a
+    /// single chain spans both LaS and Nonstop, simplifying dispatch; (b) a 16-byte
+    /// binary read is cheaper than a 32-char ASCII string read with null-termination
+    /// scan; and (c) it removes the LaS code path's dependency on arrangement_hash,
+    /// which has historically been the more fragile of the two chains.
+    ///
+    /// CHAIN VALIDATION (PoizenJam, v0.6.8):
+    ///   - Survived full Rocksmith process restart with correct resolution to new
+    ///     heap address (singleton manager re-bind, same pattern observed for the
+    ///     existing arrangement_hash, song-timer, and note-data chains).
+    ///   - Survived multiple Nonstop entry/exit cycles, including round-trips
+    ///     through main menu and back into Nonstop.
+    ///   - Tracked correctly across multiple distinct songs and across distinct
+    ///     arrangements within the same song (Lead vs Rhythm vs Bass, plus
+    ///     bonus / alternate where present).
+    ///   - Output matches arrangement_hash in LaS gameplay (cross-validation
+    ///     against the previously-trusted chain).
+    ///
+    /// FORMAT NOTE: the GUID is returned as a string of 32 uppercase hex chars with
+    /// no separators, matching the example IDs observed in PSARC-side data (e.g.
+    /// EA94EC3F9817673B925B4997C4C0175C). Sniffer.cs cross-references readout.
+    /// arrangementID against songDetails.arrangements[].arrangementID using
+    /// case-sensitive string equality, so case normalization to upper is required
+    /// for downstream matching to succeed.
+    ///
+    /// EDITION SHIFTS (Beta / LaP): back-derived using the +0x3080 (Beta→Remastered)
+    /// and +0x4080 (Beta→LaP) shifts that every other pointer in this file uses.
+    /// Convention has held for all twelve previously-mapped pointers/addresses, so
+    /// very likely correct here too — but the Beta and Learn_And_Play values have
+    /// NOT been independently verified. If those editions ever read all-zero GUIDs
+    /// across all gameplay states (with otherwise-working RockSniffer behavior),
+    /// check this address as the first suspect.
+    /// </remarks>
+    /// <param name="edition"></param>
+    /// <returns>A tuple of (entry address, pointer offsets).</returns>
+    /// <exception cref="ArgumentOutOfRangeException"></exception>
+    public static (int entryAddress, int[] offsets) GetPlayArrIDPointer(RSEdition edition)
+    {
+        return edition switch
+        {
+            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5C5AC, [0x20, 0x84, 0x4, 0x18, 0xB0]),
+            RSEdition.Remastered => (0x00F5C5AC + 0x3080, [0x20, 0x84, 0x4, 0x18, 0xB0]),
+            RSEdition.Remastered_Learn_And_Play => (0x00F5C5AC + 0x4080, [0x20, 0x84, 0x4, 0x18, 0xB0]),
+            _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
+        };
+    }
 }
