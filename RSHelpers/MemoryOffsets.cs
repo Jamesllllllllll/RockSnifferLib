@@ -392,11 +392,16 @@ public static class MemoryOffsets
     /// <exception cref="ArgumentOutOfRangeException"></exception>
     public static (int entryAddress, int[] offsets) GetPlayArrIDPointer(RSEdition edition)
     {
+        // CE table entry: Rocksmith2014.exe+00F5F62C, offsets [0x20, 0x84, 0x4, 0x18, 0xB0]
+        // (CE display order — outermost first, i.e. added last to the deepest pointer).
+        // Walk order (which FollowPointers expects) is the REVERSE: [0xB0, 0x18, 0x4, 0x84, 0x20].
+        // Same convention documented for GetCurrentPathPointer (v0.6.5 hotfix5) and
+        // observed for every other multi-offset chain in this file.
         return edition switch
         {
-            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5C5AC, [0x20, 0x84, 0x4, 0x18, 0xB0]),
-            RSEdition.Remastered => (0x00F5C5AC + 0x3080, [0x20, 0x84, 0x4, 0x18, 0xB0]),
-            RSEdition.Remastered_Learn_And_Play => (0x00F5C5AC + 0x4080, [0x20, 0x84, 0x4, 0x18, 0xB0]),
+            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5C5AC, [0xB0, 0x18, 0x4, 0x84, 0x20]),
+            RSEdition.Remastered => (0x00F5C5AC + 0x3080, [0xB0, 0x18, 0x4, 0x84, 0x20]),
+            RSEdition.Remastered_Learn_And_Play => (0x00F5C5AC + 0x4080, [0xB0, 0x18, 0x4, 0x84, 0x20]),
             _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
         };
     }
