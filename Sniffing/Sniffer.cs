@@ -134,7 +134,19 @@ namespace RockSnifferLib.Sniffing
         // Preserved through end-of-song (Nonstop transitions can change gameStage between
         // start and end) so PlaythroughHistory and the JS playthrough-tracker can
         // consistently gate writes for the entire run regardless of when end fires.
+        // (v0.6.8) No longer gates playthrough writes — that gate was lifted once
+        // PLAY_arrID made Nonstop arrangement resolution reliable. Field preserved
+        // for any downstream consumer that wants the contextual flag.
         private bool currentSongRunWasNonstopMode = false;
+
+        // (v0.6.8) True if the current song run was started while in a Multiplayer
+        // gameStage (RSMode.MULTIPLAYER — split_game, mp_*, duet_*, h2h_*). Used
+        // by PlaythroughHistory and the JS playthrough-tracker to skip writes —
+        // multi-user note data and per-user arrangements aren't tracked yet, so
+        // MP rows would have data-quality issues. Captured at song start using the
+        // v0.6.8 gameStage-derived mode field (more reliable than gameStage prefix
+        // matching across menu / transition states).
+        private bool currentSongRunWasMultiplayerMode = false;
 
         // ─────────────────────────────────────────────────────────────────────────
         // FIRE-ONCE GUARDS (v0.6.5)
@@ -365,6 +377,7 @@ namespace RockSnifferLib.Sniffing
                         currentSongRunPath = null;
                         currentSongRunTuning = null;
                         currentSongRunWasNonstopMode = false;
+                        currentSongRunWasMultiplayerMode = false;
                         lastLogStartedForSongID = null;
                         lastLogEndedForSongID = null;
                     }
@@ -909,22 +922,32 @@ namespace RockSnifferLib.Sniffing
             // unknown logging immediately.
 
             // Capture Nonstop-mode flag at song START (gameStage may transition by end).
-            // Used by PlaythroughHistory and the JS playthrough-tracker to gate writes —
-            // we don't write history or per-attempt records for songs played in Nonstop
-            // because arrangement resolution is unreliable there (memory pointer doesn't
-            // populate in Nonstop, and bonus/alternate arrangements can be enabled too).
-            // The check covers all Nonstop-related gameStages observed: nsp_main is the
-            // pre-game setlist screen, nonstopplayhub is the between-songs lobby,
-            // nonstopplaygame is the active gameplay stage.
+            // Pre-v0.6.8 this flag gated playthrough writes; v0.6.8 lifted the gate
+            // once PLAY_arrID made Nonstop arrangement resolution reliable. The flag
+            // is still propagated on event args for any downstream consumer that wants
+            // the contextual signal, and it's used below to suppress the
+            // "Could not resolve arrangement" warning for Nonstop runs — see comment
+            // at the warning site.
             //
-            // Computed BEFORE the warning block below so we can suppress the
-            // "Could not resolve arrangement" warning for Nonstop runs (where
-            // Path-based fallback is the expected resolution path).
+            // The check uses gameStage strings directly (rather than the v0.6.8
+            // mode field) to keep behavior identical to the v0.6.5 hotfix4 definition.
             string startGameStage = currentMemoryReadout?.gameStage;
             currentSongRunWasNonstopMode =
                 startGameStage == "nsp_main" ||
                 startGameStage == "nonstopplayhub" ||
                 startGameStage == "nonstopplaygame";
+
+            // (v0.6.8) Capture MULTIPLAYER-mode flag at song START. Used by
+            // PlaythroughHistory and the JS playthrough-tracker to gate writes — full
+            // MP support (multi-user note data, per-user arrangements) is a separate
+            // larger effort; until that lands, MP plays would produce row-quality
+            // issues if persisted.
+            //
+            // Uses the v0.6.8 gameStage-derived mode field rather than reimplementing
+            // gameStage prefix matching for split_game / mp_* / duet_* / h2h_* — the
+            // RSMode classifier already covers all of those (see
+            // RSMemoryReader.DeriveModeFromGameStage).
+            currentSongRunWasMultiplayerMode = currentMemoryReadout?.mode == RSMode.MULTIPLAYER;
 
             string path;
             string tuning;
@@ -937,10 +960,13 @@ namespace RockSnifferLib.Sniffing
                 if (fallbackReason != null && !currentSongRunWasNonstopMode)
                 {
                     // Suppress the warning when the song was started in Nonstop Play.
-                    // arrangementID never populates in Nonstop (known unfixable until a
-                    // Nonstop-compatible arrangementID memory pointer is found), so
-                    // Path-based fallback is the EXPECTED resolution path there, not a
-                    // degraded one. Logging it would just be noise on every Nonstop song.
+                    // v0.6.8's PLAY_arrID chain makes arrangement-ID resolution reliable
+                    // in Nonstop, but brief transients during song-to-song transitions
+                    // can still produce momentary failures where Path-based fallback
+                    // fires; logging those as errors would be noise on every Nonstop
+                    // song. The suppression conservatively preserves pre-v0.6.8 quietness
+                    // for Nonstop, even though the underlying resolution gap is now
+                    // closed in the common case.
                     //
                     // For LaS / SA / other modes, the warning is still useful — it
                     // means either a transient timing race (ID hadn't populated yet at
@@ -1008,7 +1034,8 @@ namespace RockSnifferLib.Sniffing
                 arrangementID = resolvedArrangementID,
                 path = path,
                 tuning = tuning,
-                wasNonstopMode = currentSongRunWasNonstopMode
+                wasNonstopMode = currentSongRunWasNonstopMode,
+                wasMultiplayerMode = currentSongRunWasMultiplayerMode
             });
         }
 
@@ -1091,6 +1118,7 @@ namespace RockSnifferLib.Sniffing
                 path = currentSongRunPath,
                 tuning = currentSongRunTuning,
                 wasNonstopMode = currentSongRunWasNonstopMode,
+                wasMultiplayerMode = currentSongRunWasMultiplayerMode,
                 readout = snapshotReadout
             });
 
@@ -1105,6 +1133,7 @@ namespace RockSnifferLib.Sniffing
             currentSongRunPath = null;
             currentSongRunTuning = null;
             currentSongRunWasNonstopMode = false;
+            currentSongRunWasMultiplayerMode = false;
         }
 
         /// <summary>
