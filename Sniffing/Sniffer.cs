@@ -325,7 +325,7 @@ namespace RockSnifferLib.Sniffing
                 if (newReadout.songID != currentMemoryReadout.songID || (currentCDLCDetails == null || !currentCDLCDetails.IsValid()))
                 {
                     // ─────────────────────────────────────────────────────────────────
-                    // FORCE-END OLD SONG (v0.6.5)
+                    // FORCE-END OLD SONG (v0.6.5; v0.6.9 completion-flag rewrite)
                     //
                     // If we previously fired LogSongStart for a song (lastLogStartedForSongID
                     // matches the OUTGOING currentCDLCDetails) but never fired LogSongEnd for
@@ -334,17 +334,17 @@ namespace RockSnifferLib.Sniffing
                     // state machine can stay parked in SONG_ENDING and never naturally call
                     // LogSongEnd between songs.
                     //
-                    // The completed flag is decided by a heuristic: if max observed timer
-                    // reached close to song length, treat as completed; otherwise as quit.
+                    // The completed flag is now determined by DetermineCompletedForForceEnd()
+                    // using three deterministic signals (pause-state, SA-fail, no-progress)
+                    // rather than the pre-v0.6.9 maxTime-near-songLength heuristic, which
+                    // was vulnerable to poll-cadence races at song end.
                     // ─────────────────────────────────────────────────────────────────
                     if (currentCDLCDetails != null && currentCDLCDetails.IsValid() &&
                         lastLogStartedForSongID != null &&
                         lastLogStartedForSongID == currentCDLCDetails.songID &&
                         lastLogEndedForSongID != currentCDLCDetails.songID)
                     {
-                        bool reachedEnd = (maxTime != float.MinValue) &&
-                                          (maxTime >= currentCDLCDetails.songLength - 0.5f);
-                        LogSongEnd(reachedEnd);
+                        LogSongEnd(DetermineCompletedForForceEnd());
 
                         // Reset state machine and timing for the upcoming new song
                         currentState = SnifferState.IN_MENUS;
@@ -486,9 +486,7 @@ namespace RockSnifferLib.Sniffing
                             lastLogStartedForSongID == currentCDLCDetails.songID &&
                             lastLogEndedForSongID != currentCDLCDetails.songID)
                         {
-                            bool reachedEnd = (maxTime != float.MinValue) &&
-                                              (maxTime >= currentCDLCDetails.songLength - 0.5f);
-                            LogSongEnd(reachedEnd);
+                            LogSongEnd(DetermineCompletedForForceEnd());
 
                             currentState = SnifferState.IN_MENUS;
                             lowTime = float.MaxValue;
@@ -1039,6 +1037,59 @@ namespace RockSnifferLib.Sniffing
             });
         }
 
+        // Floor for case-2 (no-input-boot) detection. Rocksmith's no-input
+        // abort only fires before the timer advances meaningfully; once
+        // playback is moving, audio-input drop triggers auto-pause instead.
+        // 0.1s is well below any legitimate play time and well above the
+        // float-near-zero initialization flashes (e.g. 9.2515e-37) that can
+        // briefly appear during chart load.
+        private const float MIN_PROGRESS_SECONDS = 0.1f;
+
+        /// <summary>
+        /// Decides the completed flag for force-end paths (SONG_PLAYING→timer=0,
+        /// songID-change force-end, gameStage force-end). Returns true unless one
+        /// of the three documented completed=false cases applies:
+        ///   1. Pause-driven exit/restart/skip (currentState still SONG_PAUSED
+        ///      when force-end fires — UpdateState() hasn't run yet this poll).
+        ///   2. No-input boot at song start (timer never advanced past the
+        ///      MIN_PROGRESS_SECONDS floor; Rocksmith aborts before playback).
+        ///   3. Score Attack 3-strike fail (FailedPhrases >= 3, regardless of
+        ///      how close maxTime got to songLength — last-phrase fails are
+        ///      still fails).
+        /// SA fail is checked FIRST so a last-phrase fail (where maxTime would
+        /// otherwise look like a natural completion) still resolves to false.
+        /// </summary>
+        private bool DetermineCompletedForForceEnd()
+        {
+            // CASE 3: SA 3-strike fail
+            if (currentMemoryReadout?.mode == RSMode.SCOREATTACK &&
+                currentMemoryReadout.noteData is ScoreAttackNoteData saData &&
+                saData.FailedPhrases >= 3)
+            {
+                return false;
+            }
+
+            // CASE 2: no-input boot at song start
+            if (maxTime < MIN_PROGRESS_SECONDS)
+            {
+                return false;
+            }
+
+            // CASE 1: pause-driven exit/restart/skip. State is still SONG_PAUSED
+            // when the force-end fires because pause-driven flows trigger the
+            // force-end (via chart unload, songID change, or gameStage change)
+            // before UpdateState() has a chance to transition the state machine.
+            if (currentState == SnifferState.SONG_PAUSED)
+            {
+                return false;
+            }
+
+            // Otherwise: presumed natural completion (e.g. natural-end-of-song
+            // that missed the SONG_ENDING transition due to poll cadence race,
+            // or an NSP transition where the previous song completed naturally).
+            return true;
+        }
+
         private void LogSongEnd(bool completed)
         {
             if (currentCDLCDetails == null || !currentCDLCDetails.IsValid())
@@ -1225,14 +1276,18 @@ namespace RockSnifferLib.Sniffing
                         currentState = SnifferState.SONG_ENDING;
                     }
 
-                    // If the timer goes to 0 without reaching the end, user quit / restarted
+                    // If the timer goes to 0 without reaching the end, force-end
+                    // the song. The completed flag is determined by
+                    // DetermineCompletedForForceEnd() — this catches SA 3-strike
+                    // fail, no-input boot at start, and natural-completion-missed-
+                    // SONG_ENDING-race (the last of which was a v0.6.8 false
+                    // negative source — see v0.6.9 release notes).
                     if (currentMemoryReadout.songTimer == 0 &&
                         initTime != float.MaxValue)
                     {
-                        // Early quit, not completed
-                        completed = false;
+                        completed = DetermineCompletedForForceEnd();
 
-                        LogSongEnd(completed: false);
+                        LogSongEnd(completed: completed);
                         currentState = SnifferState.IN_MENUS;
 
                         // Reset pause tracking for next run
