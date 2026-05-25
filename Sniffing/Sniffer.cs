@@ -112,6 +112,20 @@ namespace RockSnifferLib.Sniffing
         /// </summary>
         private float pauseTimerSnapshot = float.MinValue;
 
+        /// <summary>
+        /// Previous poll's pauseMenuMode value (v0.6.9). Pause-entry is detected on
+        /// the 0 → non-zero TRANSITION of pauseMenuMode, not on the raw current
+        /// value, so stale carry-over reads (e.g. immediately after the user
+        /// clicks Restart from the pause menu — Rocksmith's pauseMenuMode briefly
+        /// keeps reading 2 even though the new song has begun playing) don't
+        /// trigger a false SONG_PLAYING → SONG_PAUSED transition.
+        ///
+        /// Captured at the start of every poll, before newReadout overwrites
+        /// currentMemoryReadout. The pause-entry condition then requires
+        /// `previousPauseMenuMode == 0 && currentMemoryReadout.pauseMenuMode != 0`.
+        /// </summary>
+        private byte previousPauseMenuMode = 0;
+
         // ─────────────────────────────────────────────────────────────────────────
         // SONG-RUN CONTEXT (v0.6.5)
         //
@@ -421,6 +435,12 @@ namespace RockSnifferLib.Sniffing
                         newReadout.arrangementID = null;
                     }
                 }
+
+                // (v0.6.9) Capture previous poll's pauseMenuMode BEFORE CopyTo
+                // overwrites currentMemoryReadout. The pause-entry condition below
+                // requires prev==0 && curr!=0 (a real 0→non-zero transition) to
+                // avoid firing on stale carry-over reads after a restart.
+                previousPauseMenuMode = currentMemoryReadout?.pauseMenuMode ?? 0;
 
                 newReadout.CopyTo(ref currentMemoryReadout);
 
@@ -1300,26 +1320,29 @@ namespace RockSnifferLib.Sniffing
                         break;
                     }
 
-                    // PAUSE ENTRY (v0.6.7): flag-driven via pauseMenuMode.
+                    // PAUSE ENTRY (v0.6.7 flag-driven, v0.6.9 transition-gated):
+                    // pauseMenuMode at MemoryOffsets.GetPauseMenuModePointer encodes
+                    // blocking-overlay state: 0=no overlay, 1=sub-overlay (e.g.
+                    // tuner-from-pause), 2=top-level overlay (pause menu, restart
+                    // confirmation, etc.).
                     //
-                    // Replaces the prior timer-stall heuristic. pauseMenuMode at
-                    // MemoryOffsets.GetPauseMenuModePointer encodes blocking-overlay
-                    // state: 0=no overlay, 1=sub-overlay (e.g. tuner-from-pause),
-                    // 2=top-level overlay (pause menu, restart confirmation, etc.).
-                    // Any non-zero value means the user is in a pause sub-flow.
-                    //
-                    // Detection is now first-poll instant rather than
-                    // STALL_THRESHOLD-polls delayed. The end-of-song guard previously
-                    // needed for stall detection is gone -- the flag is authoritative
-                    // regardless of timer position, so spurious timer stalls near
-                    // song completion can no longer trip false-positive pause detection.
+                    // v0.6.9: detection now requires the 0 → non-zero TRANSITION of
+                    // pauseMenuMode rather than just the current non-zero state. This
+                    // prevents a false SONG_PLAYING → SONG_PAUSED firing immediately
+                    // after the user clicks Restart from the pause menu: Rocksmith
+                    // can briefly keep pauseMenuMode reading 2 for several polls into
+                    // the new song's playback before clearing it to 0. Without the
+                    // transition gate, the new song's first few polls (once
+                    // songTimer > initTime) would fire a spurious "Song Paused!"
+                    // followed by "Song Resumed!" once the stale flag cleared.
                     //
                     // The initTime guard is preserved: pauseMenuMode can theoretically
                     // become non-zero during the brief loading-screen window before
                     // the user has actually started playing (e.g. a Tools-menu access
                     // during a transition). Once initTime is captured (timer first
                     // observed > 0), pause detection is enabled.
-                    if (currentMemoryReadout.isPaused &&
+                    if (previousPauseMenuMode == 0 &&
+                        currentMemoryReadout.pauseMenuMode != 0 &&
                         initTime != float.MaxValue &&
                         currentMemoryReadout.songTimer > initTime)
                     {
