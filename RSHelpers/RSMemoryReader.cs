@@ -152,6 +152,13 @@ namespace RockSnifferLib.RSHelpers
                 readout.mode = DeriveModeFromGameStage(readout.gameStage);
             }
 
+            readout.multiplayer = new RSMultiplayerDiagnostics
+            {
+                active = readout.mode == RSMode.MULTIPLAYER,
+                gameStage = readout.gameStage,
+                songTimerCandidate = readout.songTimer
+            };
+
             // ARRANGEMENT ID
             //
             // Dispatch by gameStage (v0.6.8). Two memory chains expose arrangement-id
@@ -213,20 +220,34 @@ namespace RockSnifferLib.RSHelpers
                                   || readout.gameStage == "nonstopplaygame"
                                   || readout.gameStage == "nsp_pause";
 
-            string resolved_arrangement_id;
-            if (usePlayArrIDChain)
+            string? play_arrangement_id_candidate = null;
+            if (usePlayArrIDChain || readout.multiplayer.active)
             {
-                resolved_arrangement_id = ReadPlayArrIDFromMemory(
+                play_arrangement_id_candidate = ReadPlayArrIDFromMemory(
                     FollowPointers(MemoryOffsets.GetPlayArrIDPointer(edition)));
             }
-            else
+
+            string? legacy_arrangement_hash_candidate = null;
+            if (!usePlayArrIDChain || readout.multiplayer.active)
             {
-                resolved_arrangement_id = MemoryHelper.ReadStringFromMemory(
+                legacy_arrangement_hash_candidate = ReadArrangementHashFromMemory(
                     rsProcessHandle,
                     FollowPointers(MemoryOffsets.GetArrangementHashPointer(edition)));
             }
 
-            if (IsValidArrangementHash(resolved_arrangement_id))
+            string? resolved_arrangement_id = usePlayArrIDChain
+                ? play_arrangement_id_candidate
+                : legacy_arrangement_hash_candidate;
+
+            if (readout.multiplayer.active)
+            {
+                readout.multiplayer.playArrangementID = play_arrangement_id_candidate;
+                readout.multiplayer.playArrangementIDValid = IsValidArrangementHash(play_arrangement_id_candidate);
+                readout.multiplayer.legacyArrangementHash = legacy_arrangement_hash_candidate;
+                readout.multiplayer.legacyArrangementHashValid = IsValidArrangementHash(legacy_arrangement_hash_candidate);
+            }
+
+            if (resolved_arrangement_id != null && IsValidArrangementHash(resolved_arrangement_id))
             {
                 readout.arrangementID = resolved_arrangement_id;
             }
@@ -315,18 +336,46 @@ namespace RockSnifferLib.RSHelpers
             //Candidate #1: FollowPointers(0x00F5C5AC, new int[] { 0xB0, 0x18, 0x4, 0x4C, 0x0 })
             //Candidate #2: FollowPointers(0x00F5C4CC, new int[] { 0x5F0, 0x18, 0x4, 0x4C, 0x0 })
 
+            IntPtr learnASongNoteDataAddress =
+                FollowPointers(MemoryOffsets.GetLearnASongNoteDataPointer(edition));
+            bool learnASongNoteDataValid = IsNoteDataStructValid(learnASongNoteDataAddress);
+
+            IntPtr scoreAttackNoteDataAddress = IntPtr.Zero;
+            bool scoreAttackNoteDataValid = false;
+            if (readout.multiplayer.active || !learnASongNoteDataValid)
+            {
+                scoreAttackNoteDataAddress =
+                    FollowPointers(MemoryOffsets.GetScoreAttackNoteDataPointer(edition));
+                scoreAttackNoteDataValid = IsNoteDataStructValid(scoreAttackNoteDataAddress);
+            }
+
             //If note data is not valid, try the next mode
             //Learn a song
-            if (!ReadNoteData(FollowPointers(MemoryOffsets.GetLearnASongNoteDataPointer(edition))))
+            if (learnASongNoteDataValid)
+            {
+                ReadNoteData(learnASongNoteDataAddress);
+            }
+            else
             {
                 //Score attack
-                ReadScoreAttackNoteData(FollowPointers(MemoryOffsets.GetScoreAttackNoteDataPointer(edition)));
+                ReadScoreAttackNoteData(scoreAttackNoteDataAddress);
                 // (v0.6.8) The legacy `readout.mode = RSMode.UNKNOWN` fallback when
                 // neither note-data chain resolved was removed. Mode is no longer
                 // tied to note-data resolution — it's derived from gameStage by
                 // DeriveModeFromGameStage in DoReadout. Note-data dispatch here
                 // just decides which struct shape to read; UNKNOWN as a fallback
                 // would now incorrectly clobber a gameStage-derived menu mode.
+            }
+
+            if (readout.multiplayer.active)
+            {
+                readout.multiplayer.learnASongNoteDataValid = learnASongNoteDataValid;
+                readout.multiplayer.scoreAttackNoteDataValid = scoreAttackNoteDataValid;
+                readout.multiplayer.noteDataSource = learnASongNoteDataValid
+                    ? "learn-a-song"
+                    : scoreAttackNoteDataValid
+                        ? "score-attack"
+                        : null;
             }
 
             //Copy over everything when a song is running
@@ -393,7 +442,7 @@ namespace RockSnifferLib.RSHelpers
         /// game hasn't yet populated that location with a valid hash (e.g. during song-load
         /// transitions, especially in Nonstop Play).
         /// </summary>
-        private static bool IsValidArrangementHash(string s)
+        private static bool IsValidArrangementHash(string? s)
         {
             if (string.IsNullOrEmpty(s) || s.Length != 32)
             {
@@ -596,6 +645,18 @@ namespace RockSnifferLib.RSHelpers
             readout.songTimer = MemoryHelper.ReadFloatFromMemory(rsProcessHandle, timerAddress);
         }
 
+        private string? ReadArrangementHashFromMemory(IntPtr processHandle, IntPtr address)
+        {
+            try
+            {
+                return MemoryHelper.ReadStringFromMemory(processHandle, address);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         /// <summary>
         /// Reads 16 raw bytes from the PLAY_arrID chain (v0.6.8) and converts them
         /// to the canonical 32-char uppercase hex string format that matches the
@@ -622,7 +683,7 @@ namespace RockSnifferLib.RSHelpers
         /// prior value (existing v0.6.5 "fail then retry on next poll" semantics
         /// from the conditional IsValidArrangementHash assignment).
         /// </summary>
-        private string ReadPlayArrIDFromMemory(IntPtr address)
+        private string? ReadPlayArrIDFromMemory(IntPtr address)
         {
             if (address == IntPtr.Zero)
             {
@@ -649,15 +710,7 @@ namespace RockSnifferLib.RSHelpers
 
         private bool ReadNoteData(IntPtr structAddress)
         {
-            //Check validity
-            //No null pointers
-            if (structAddress == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            //This seems to be a magic number that is at this value when the pointer is valid
-            if (MemoryHelper.ReadInt32FromMemory(rsProcessHandle, IntPtr.Add(structAddress, 0x0008)) != 111000)
+            if (!IsNoteDataStructValid(structAddress))
             {
                 return false;
             }
@@ -676,15 +729,7 @@ namespace RockSnifferLib.RSHelpers
 
         private bool ReadScoreAttackNoteData(IntPtr structAddress)
         {
-            //Check validity
-            //No null pointers
-            if (structAddress == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            //This seems to be a magic number that is at this value when the pointer is valid
-            if (MemoryHelper.ReadInt32FromMemory(rsProcessHandle, IntPtr.Add(structAddress, 0x0008)) != 111000)
+            if (!IsNoteDataStructValid(structAddress))
             {
                 return false;
             }
@@ -698,6 +743,26 @@ namespace RockSnifferLib.RSHelpers
             readout.noteData = MemoryHelper.ReadStructureFromMemory<ScoreAttackNoteData>(rsProcessHandle, structAddress);
 
             return true;
+        }
+
+        private bool IsNoteDataStructValid(IntPtr structAddress)
+        {
+            //Check validity
+            //No null pointers
+            if (structAddress == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                //This seems to be a magic number that is at this value when the pointer is valid
+                return MemoryHelper.ReadInt32FromMemory(rsProcessHandle, IntPtr.Add(structAddress, 0x0008)) == 111000;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }
