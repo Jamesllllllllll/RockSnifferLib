@@ -1,0 +1,40 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out RockSnifferLib
+        uses: actions/checkout@v5
+        with:
+          path: RockSnifferLib
+
+      - name: Check out Rocksmith2014PsarcLib
+        uses: actions/checkout@v5
+        with:
+          repository: kokolihapihvi/Rocksmith2014PsarcLib
+          ref: c226fca685e3ca6b81fdce8e3bc787fefc092b79
+          path: Rocksmith2014PsarcLib
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore RockSnifferLib.sln
+        working-directory: RockSnifferLib
+
+      - name: Build
+        run: dotnet build RockSnifferLib.sln --configuration Release --no-restore
+        working-directory: RockSnifferLib
