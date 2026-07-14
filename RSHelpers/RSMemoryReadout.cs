@@ -80,6 +80,16 @@ namespace RockSnifferLib.RSHelpers
         public INoteData noteData;
 
         /// <summary>
+        /// Diagnostic-only multiplayer evidence collected while mode is MULTIPLAYER.
+        ///
+        /// These fields are intentionally not used by the Sniffer state machine yet.
+        /// They let beta captures show which existing pointer chains, if any, produce
+        /// plausible data in split-screen/multiplayer before we promote anything into
+        /// song-start, progress, completion, or playthrough-history behavior.
+        /// </summary>
+        public RSMultiplayerDiagnostics multiplayer = new RSMultiplayerDiagnostics();
+
+        /// <summary>
         /// Prints out this readouts details (if Logger.logMemoryOutput is enabled)
         /// </summary>
         public void Print()
@@ -111,6 +121,8 @@ namespace RockSnifferLib.RSHelpers
             copy.mode = mode;
 
             copy.noteData = noteData;
+
+            copy.multiplayer = multiplayer?.Clone() ?? new RSMultiplayerDiagnostics();
         }
 
         /// <summary>
@@ -125,5 +137,48 @@ namespace RockSnifferLib.RSHelpers
 
             return copy;
         }
+    }
+
+    [Serializable]
+    public class RSMultiplayerDiagnostics
+    {
+        public bool active = false;
+        public string gameStage = "";
+        public float songTimerCandidate = 0;
+        public string? playArrangementID = null;
+        public bool playArrangementIDValid = false;
+        public string? legacyArrangementHash = null;
+        public bool legacyArrangementHashValid = false;
+        public bool learnASongNoteDataValid = false;
+        public bool scoreAttackNoteDataValid = false;
+        public string? noteDataSource = null;
+        public RSMultiplayerPlayerDiagnostic[] playerSlots = Array.Empty<RSMultiplayerPlayerDiagnostic>();
+
+        internal RSMultiplayerDiagnostics Clone()
+        {
+            return new RSMultiplayerDiagnostics
+            {
+                active = active,
+                gameStage = gameStage,
+                songTimerCandidate = songTimerCandidate,
+                playArrangementID = playArrangementID,
+                playArrangementIDValid = playArrangementIDValid,
+                legacyArrangementHash = legacyArrangementHash,
+                legacyArrangementHashValid = legacyArrangementHashValid,
+                learnASongNoteDataValid = learnASongNoteDataValid,
+                scoreAttackNoteDataValid = scoreAttackNoteDataValid,
+                noteDataSource = noteDataSource,
+                playerSlots = playerSlots ?? Array.Empty<RSMultiplayerPlayerDiagnostic>()
+            };
+        }
+    }
+
+    [Serializable]
+    public class RSMultiplayerPlayerDiagnostic
+    {
+        public int slot = 0;
+        public string? path = null;
+        public string? arrangementID = null;
+        public string? noteDataSource = null;
     }
 }
