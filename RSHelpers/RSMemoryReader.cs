@@ -159,6 +159,14 @@ namespace RockSnifferLib.RSHelpers
                 songTimerCandidate = readout.songTimer
             };
 
+            if (readout.multiplayer.active)
+            {
+                readout.multiplayer.communitySongTimerCandidate = ReadFloatCandidate(
+                    MemoryOffsets.GetCommunityMultiplayerSongTimerPointer(edition));
+                readout.multiplayer.communitySongTimerReversedOffsetsCandidate = ReadFloatCandidate(
+                    MemoryOffsets.GetCommunityMultiplayerSongTimerReversedPointer(edition));
+            }
+
             // ARRANGEMENT ID
             //
             // Dispatch by gameStage (v0.6.8). Two memory chains expose arrangement-id
@@ -417,6 +425,15 @@ namespace RockSnifferLib.RSHelpers
             // session, defeating the entire point of the v0.6.8 redesign.
             prevReadout.mode = readout.mode;
 
+            // Multiplayer diagnostics are useful specifically when the ordinary
+            // song-timer chain is zero or invalid. Always propagate the current
+            // diagnostic snapshot instead of leaving it behind the songTimer > 0
+            // CopyTo gate above. Without this, multiplayer.active and every
+            // candidate value can remain stale across game-stage transitions and
+            // even later sessions.
+            prevReadout.multiplayer = readout.multiplayer?.Clone()
+                ?? new RSMultiplayerDiagnostics();
+
             // Always propagate arrangementID (v0.6.5):
             // The previous behavior of only updating arrangementID when songTimer > 0
             // caused two problems:
@@ -643,6 +660,23 @@ namespace RockSnifferLib.RSHelpers
         {
             //Read float from memory and assign field on readout
             readout.songTimer = MemoryHelper.ReadFloatFromMemory(rsProcessHandle, timerAddress);
+        }
+
+        private float? ReadFloatCandidate((int entryAddress, int[] offsets) pointer)
+        {
+            try
+            {
+                IntPtr address = FollowPointers(pointer);
+                if (address == IntPtr.Zero)
+                {
+                    return null;
+                }
+                return MemoryHelper.ReadFloatFromMemory(rsProcessHandle, address);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private string? ReadArrangementHashFromMemory(IntPtr processHandle, IntPtr address)

@@ -145,6 +145,8 @@ namespace RockSnifferLib.RSHelpers
         public bool active = false;
         public string gameStage = "";
         public float songTimerCandidate = 0;
+        public float? communitySongTimerCandidate = null;
+        public float? communitySongTimerReversedOffsetsCandidate = null;
         public string? playArrangementID = null;
         public bool playArrangementIDValid = false;
         public string? legacyArrangementHash = null;
@@ -161,6 +163,8 @@ namespace RockSnifferLib.RSHelpers
                 active = active,
                 gameStage = gameStage,
                 songTimerCandidate = songTimerCandidate,
+                communitySongTimerCandidate = communitySongTimerCandidate,
+                communitySongTimerReversedOffsetsCandidate = communitySongTimerReversedOffsetsCandidate,
                 playArrangementID = playArrangementID,
                 playArrangementIDValid = playArrangementIDValid,
                 legacyArrangementHash = legacyArrangementHash,

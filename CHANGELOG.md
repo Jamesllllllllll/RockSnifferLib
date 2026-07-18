@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.9-rocklist.3] - 2026-07-17
+
+### Added
+
+- Added diagnostic candidates for the community-reported multiplayer song
+  timer pointer in both possible offset orders.
+
+### Fixed
+
+- Multiplayer diagnostic values now refresh on every readout instead of
+  becoming stale when the ordinary song timer is unavailable.
+
 ## [0.6.9-rocklist.2] - 2026-07-14
 
 ### Added
