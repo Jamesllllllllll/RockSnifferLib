@@ -62,6 +62,49 @@ public static class MemoryOffsets
     }
 
     /// <summary>
+    /// Get the community-reported multiplayer song-timer pointer candidate.
+    /// </summary>
+    /// <remarks>
+    /// This chain was reported in kokolihapihvi/RockSniffer issue #15 as
+    /// Rocksmith2014.exe+0xF5CB7C with offsets 0x28, 0x1F4, 0x98.
+    ///
+    /// The report did not specify whether its offsets were listed in pointer-walk
+    /// order or Cheat Engine display order. This method preserves the published
+    /// order; GetCommunityMultiplayerSongTimerReversedPointer exposes the reverse
+    /// order so diagnostic captures can validate both without promoting either
+    /// candidate into supported gameplay state.
+    ///
+    /// The Remastered address is copied exactly from the report. Beta and
+    /// Learn & Play addresses are derived using the same edition shifts as the
+    /// other pointers in this file and have not been independently validated.
+    /// </remarks>
+    public static (int entryAddress, int[] offsets) GetCommunityMultiplayerSongTimerPointer(RSEdition edition)
+    {
+        return edition switch
+        {
+            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5CB7C - 0x3080, [0x28, 0x1F4, 0x98]),
+            RSEdition.Remastered => (0x00F5CB7C, [0x28, 0x1F4, 0x98]),
+            RSEdition.Remastered_Learn_And_Play => (0x00F5CB7C + 0x1000, [0x28, 0x1F4, 0x98]),
+            _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
+        };
+    }
+
+    /// <summary>
+    /// Get the community-reported multiplayer timer candidate with offsets in
+    /// reverse order for diagnostic validation.
+    /// </summary>
+    public static (int entryAddress, int[] offsets) GetCommunityMultiplayerSongTimerReversedPointer(RSEdition edition)
+    {
+        return edition switch
+        {
+            RSEdition.Remastered_Just_In_Case_We_Need_It_Beta => (0x00F5CB7C - 0x3080, [0x98, 0x1F4, 0x28]),
+            RSEdition.Remastered => (0x00F5CB7C, [0x98, 0x1F4, 0x28]),
+            RSEdition.Remastered_Learn_And_Play => (0x00F5CB7C + 0x1000, [0x98, 0x1F4, 0x28]),
+            _ => throw new ArgumentOutOfRangeException(nameof(edition), edition, "Unknown edition")
+        };
+    }
+
+    /// <summary>
     /// Get the pointer to the arrangement hash for the given edition
     /// </summary>
     /// <param name="edition"></param>
