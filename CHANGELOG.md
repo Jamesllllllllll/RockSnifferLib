@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.9-rocklist.4] - 2026-07-28
+
+### Fixed
+
+- PSARC scanning now waits for downloads to finish before reading them and no
+  longer prevents browsers from replacing temporary download files.
+
 ## [0.6.9-rocklist.3] - 2026-07-17
 
 ### Added

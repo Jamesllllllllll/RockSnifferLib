@@ -16,6 +16,23 @@ namespace RockSnifferLib.RSHelpers
 {
     public static class PSARCUtil
     {
+        internal readonly record struct PSARCFileSnapshot(long Length, DateTime LastWriteTimeUtc);
+
+        private const int PSARCHeaderLength = 32;
+        private const int PSARCReadyAttempts = 40;
+        private const int PSARCReadyDelayMilliseconds = 250;
+        private const int PSARCStableObservations = 4;
+
+        internal static FileStream OpenReadShared(FileInfo fileInfo)
+        {
+            return new FileStream(
+                fileInfo.FullName,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete
+            );
+        }
+
         /// <summary>
         /// Waits for a file to exist and be available for reading
         /// </summary>
@@ -41,9 +58,8 @@ namespace RockSnifferLib.RSHelpers
             {
                 try
                 {
-                    using (FileStream stream = fileInfo.OpenRead())
+                    using (FileStream stream = OpenReadShared(fileInfo))
                     {
-                        stream.Close();
                         break; // break when file was successfully opened
                     }
                 }
@@ -51,6 +67,135 @@ namespace RockSnifferLib.RSHelpers
                 {
                     Thread.Sleep(100);
                 }
+            }
+        }
+
+        internal static bool TryWaitForStablePSARC(
+            FileInfo fileInfo,
+            out PSARCFileSnapshot snapshot,
+            int maxAttempts = PSARCReadyAttempts,
+            int delayMilliseconds = PSARCReadyDelayMilliseconds,
+            int requiredStableObservations = PSARCStableObservations
+        )
+        {
+            if (maxAttempts <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+            }
+
+            if (delayMilliseconds < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(delayMilliseconds));
+            }
+
+            if (requiredStableObservations <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(requiredStableObservations));
+            }
+
+            snapshot = default;
+            PSARCFileSnapshot? previousSnapshot = null;
+            var stableObservations = 0;
+
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                if (TryGetPSARCFileSnapshot(fileInfo, out var currentSnapshot))
+                {
+                    stableObservations =
+                        previousSnapshot.HasValue &&
+                        previousSnapshot.Value.Equals(currentSnapshot)
+                            ? stableObservations + 1
+                            : 1;
+                    previousSnapshot = currentSnapshot;
+
+                    if (stableObservations >= requiredStableObservations)
+                    {
+                        snapshot = currentSnapshot;
+                        return true;
+                    }
+                }
+                else
+                {
+                    previousSnapshot = null;
+                    stableObservations = 0;
+                }
+
+                if (attempt + 1 < maxAttempts && delayMilliseconds > 0)
+                {
+                    Thread.Sleep(delayMilliseconds);
+                }
+            }
+
+            return false;
+        }
+
+        internal static bool MatchesPSARCFileSnapshot(
+            FileInfo fileInfo,
+            PSARCFileSnapshot expectedSnapshot
+        )
+        {
+            return TryGetPSARCFileSnapshot(fileInfo, out var currentSnapshot) &&
+                currentSnapshot.Equals(expectedSnapshot);
+        }
+
+        internal static bool TryGetPSARCFileSnapshot(
+            FileInfo fileInfo,
+            out PSARCFileSnapshot snapshot
+        )
+        {
+            snapshot = default;
+
+            try
+            {
+                fileInfo.Refresh();
+                if (!fileInfo.Exists || fileInfo.Length < PSARCHeaderLength)
+                {
+                    return false;
+                }
+
+                var initialLength = fileInfo.Length;
+                var initialLastWriteTimeUtc = fileInfo.LastWriteTimeUtc;
+
+                using (var stream = OpenReadShared(fileInfo))
+                {
+                    if (stream.Length != initialLength)
+                    {
+                        return false;
+                    }
+
+                    Span<byte> identifier = stackalloc byte[4];
+                    if (
+                        stream.Read(identifier) != identifier.Length ||
+                        identifier[0] != (byte)'P' ||
+                        identifier[1] != (byte)'S' ||
+                        identifier[2] != (byte)'A' ||
+                        identifier[3] != (byte)'R'
+                    )
+                    {
+                        return false;
+                    }
+                }
+
+                fileInfo.Refresh();
+                if (
+                    !fileInfo.Exists ||
+                    fileInfo.Length != initialLength ||
+                    fileInfo.LastWriteTimeUtc != initialLastWriteTimeUtc
+                )
+                {
+                    return false;
+                }
+
+                snapshot = new PSARCFileSnapshot(initialLength, initialLastWriteTimeUtc);
+                return true;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
             }
         }
 
@@ -283,7 +428,7 @@ namespace RockSnifferLib.RSHelpers
             //Calculate file hash
             using (var md5 = MD5.Create())
             {
-                using (var stream = fileInfo.OpenRead())
+                using (var stream = OpenReadShared(fileInfo))
                 {
                     var hash = Convert.ToBase64String(md5.ComputeHash(stream));
                     return hash;

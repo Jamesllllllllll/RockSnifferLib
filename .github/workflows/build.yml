@@ -38,3 +38,7 @@ jobs:
       - name: Build
         run: dotnet build RockSnifferLib.sln --configuration Release --no-restore
         working-directory: RockSnifferLib
+
+      - name: Test
+        run: dotnet test RockSnifferLib.Tests/RockSnifferLib.Tests.csproj --configuration Release
+        working-directory: RockSnifferLib
