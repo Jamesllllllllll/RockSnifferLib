@@ -5,6 +5,7 @@ using RockSnifferLib.Logging;
 using RockSnifferLib.RSHelpers;
 using RockSnifferLib.RSHelpers.NoteData;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -627,16 +628,6 @@ namespace RockSnifferLib.Sniffing
             // Get path to rs directory
             var path = Path.GetDirectoryName(_rsProcess.MainModule.FileName);
 
-            // Create main watcher for the dlc folder
-            CreateFileSystemWatcher(path + Path.DirectorySeparatorChar + "dlc", "*.psarc");
-
-            // Find all symbolic links and create a watcher for each
-            var symlinks = new List<string>();
-            FindSymLinks(path + Path.DirectorySeparatorChar + "dlc", symlinks);
-
-            // Create a watcher for each symlink
-            foreach (var symlink in symlinks) CreateFileSystemWatcher(symlink, "*.psarc");
-
             // Clamp to max 8 parallelism, because going higher is pretty ridiculous
             // Going higher is still possible manually through the config
             int parallelism = Math.Min(8, Math.Max(1, Environment.ProcessorCount));
@@ -646,6 +637,16 @@ namespace RockSnifferLib.Sniffing
 
             Logger.Log("Using parallelism of {0}", parallelism);
             psarcFileBlock = new ActionBlock<string>(psarcFile => ProcessPsarcFile(psarcFile), new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = parallelism });
+
+            // Create main watcher for the dlc folder
+            CreateFileSystemWatcher(path + Path.DirectorySeparatorChar + "dlc", "*.psarc");
+
+            // Find all symbolic links and create a watcher for each
+            var symlinks = new List<string>();
+            FindSymLinks(path + Path.DirectorySeparatorChar + "dlc", symlinks);
+
+            // Create a watcher for each symlink
+            foreach (var symlink in symlinks) CreateFileSystemWatcher(symlink, "*.psarc");
 
             await Task.Run(() => ProcessAllPsarcs(path));
         }
@@ -660,7 +661,8 @@ namespace RockSnifferLib.Sniffing
         /// Queue to keep track of files that are due for parsing
         /// to avoid parsing the same file multiple times
         /// </summary>
-        private static List<string> processingQueue = new List<string>();
+        private static ConcurrentDictionary<string, byte> processingQueue =
+            new ConcurrentDictionary<string, byte>();
         private void PsarcFileChanged(object sender, FileSystemEventArgs e)
         {
             if (Logger.logProcessingQueue) Logger.Log("FileSystemWatcher: {0} \"{1}\"", e.ChangeType, e.Name);
@@ -668,15 +670,17 @@ namespace RockSnifferLib.Sniffing
             var psarcFile = e.FullPath;
 
             //Avoid duplicates in the block
-            if (processingQueue.Contains(psarcFile)) return;
-
-            processingQueue.Add(psarcFile);
+            if (!processingQueue.TryAdd(psarcFile, 0)) return;
 
             //Add to block to process the psarc file
             bool posted = psarcFileBlock.Post(psarcFile);
 
             //If post was not successful
-            if (!posted) Logger.LogError("Unable to post {0} to psarcFileBlock", psarcFile);
+            if (!posted)
+            {
+                processingQueue.TryRemove(psarcFile, out _);
+                Logger.LogError("Unable to post {0} to psarcFileBlock", psarcFile);
+            }
 
             if (Logger.logProcessingQueue) Logger.Log("Queue:{0} / Block:{1}", processingQueue.Count, psarcFileBlock.InputCount);
 
@@ -685,13 +689,10 @@ namespace RockSnifferLib.Sniffing
         private void PsarcFileProcessingDone(string psarcFile, bool success)
         {
             //If file was in the queue (triggered by filesystemwatcher)
-            if (processingQueue.Contains(psarcFile))
+            if (processingQueue.TryRemove(psarcFile, out _))
             {
                 //If processing was successful, invoke event
                 OnPsarcInstalled?.Invoke(this, new OnPsarcInstalledArgs() { FilePath = psarcFile, ParseSuccess = success });
-
-                //Remove from queue
-                processingQueue.Remove(psarcFile);
             }
 
             if (Logger.logProcessingQueue)
@@ -703,6 +704,22 @@ namespace RockSnifferLib.Sniffing
         private void ProcessPsarcFile(string psarcFile)
         {
             var fileInfo = new FileInfo(psarcFile);
+
+            var isFileSystemEvent = processingQueue.ContainsKey(psarcFile);
+            PSARCUtil.PSARCFileSnapshot readySnapshot;
+            var isReady = isFileSystemEvent
+                ? PSARCUtil.TryWaitForStablePSARC(fileInfo, out readySnapshot)
+                : PSARCUtil.TryGetPSARCFileSnapshot(fileInfo, out readySnapshot);
+
+            if (!isReady)
+            {
+                Logger.Log(
+                    "Skipping PSARC file until it is complete and stable: {0}",
+                    psarcFile
+                );
+                PsarcFileProcessingDone(psarcFile, false);
+                return;
+            }
 
             // Try to hash the psarc file
             string hash;
@@ -718,9 +735,29 @@ namespace RockSnifferLib.Sniffing
                 return;
             }
 
+            if (!PSARCUtil.MatchesPSARCFileSnapshot(fileInfo, readySnapshot))
+            {
+                Logger.Log(
+                    "PSARC file changed while it was being inspected; waiting for another file event: {0}",
+                    psarcFile
+                );
+                PsarcFileProcessingDone(psarcFile, false);
+                return;
+            }
+
             //Return if file is already cached
             if (_cache.Contains(psarcFile, hash))
             {
+                PsarcFileProcessingDone(psarcFile, false);
+                return;
+            }
+
+            if (!PSARCUtil.MatchesPSARCFileSnapshot(fileInfo, readySnapshot))
+            {
+                Logger.Log(
+                    "PSARC file changed before parsing; waiting for another file event: {0}",
+                    psarcFile
+                );
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
