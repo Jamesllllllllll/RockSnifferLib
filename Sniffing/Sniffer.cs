@@ -223,6 +223,22 @@ namespace RockSnifferLib.Sniffing
         private readonly SnifferSettings _settings;
 
         /// <summary>
+        /// Synchronizes privacy-safe runtime diagnostics.
+        /// </summary>
+        private readonly object diagnosticsSync = new object();
+        private long memoryReadAttempts = 0;
+        private long successfulMemoryReads = 0;
+        private long failedMemoryReads = 0;
+        private string lastMemoryReadErrorType = null;
+        private int catalogFilesDiscovered = 0;
+        private int catalogFilesProcessed = 0;
+        private int catalogFilesFailed = 0;
+        private int catalogSongsLoaded = 0;
+        private bool catalogScanComplete = false;
+        private bool selectedSongDetected = false;
+        private bool selectedSongResolved = false;
+
+        /// <summary>
         /// Boolean to let async tasks finish
         /// </summary>
         private bool running = true;
@@ -268,6 +284,31 @@ namespace RockSnifferLib.Sniffing
             DoMemoryReadout();
             DoStateMachine();
             DoSniffing();
+        }
+
+        /// <summary>
+        /// Returns aggregate runtime health without file paths, song identifiers,
+        /// memory values, or package contents.
+        /// </summary>
+        public SnifferDiagnosticsSnapshot GetDiagnostics()
+        {
+            lock (diagnosticsSync)
+            {
+                return new SnifferDiagnosticsSnapshot
+                {
+                    memoryReadAttempts = memoryReadAttempts,
+                    successfulMemoryReads = successfulMemoryReads,
+                    failedMemoryReads = failedMemoryReads,
+                    lastMemoryReadErrorType = lastMemoryReadErrorType,
+                    catalogFilesDiscovered = catalogFilesDiscovered,
+                    catalogFilesProcessed = catalogFilesProcessed,
+                    catalogFilesFailed = catalogFilesFailed,
+                    catalogSongsLoaded = catalogSongsLoaded,
+                    catalogScanComplete = catalogScanComplete,
+                    selectedSongDetected = selectedSongDetected,
+                    selectedSongResolved = selectedSongResolved,
+                };
+            }
         }
 
         /// <summary>
@@ -319,6 +360,11 @@ namespace RockSnifferLib.Sniffing
 
                 RSMemoryReadout newReadout = null;
 
+                lock (diagnosticsSync)
+                {
+                    memoryReadAttempts++;
+                }
+
                 try
                 {
                     //Read data from memory
@@ -329,12 +375,22 @@ namespace RockSnifferLib.Sniffing
                     if (running)
                     {
                         Logger.LogError("Error while reading memory: {0} {1}\r\n{2}", e.GetType(), e.Message, e.StackTrace);
+                        lock (diagnosticsSync)
+                        {
+                            failedMemoryReads++;
+                            lastMemoryReadErrorType = e.GetType().Name;
+                        }
                     }
                 }
 
                 if (newReadout == null)
                 {
                     continue;
+                }
+
+                lock (diagnosticsSync)
+                {
+                    successfulMemoryReads++;
                 }
 
                 if (newReadout.songID != currentMemoryReadout.songID || (currentCDLCDetails == null || !currentCDLCDetails.IsValid()))
@@ -555,6 +611,12 @@ namespace RockSnifferLib.Sniffing
 
                 OnMemoryReadout?.Invoke(this, new OnMemoryReadoutArgs() { memoryReadout = currentMemoryReadout });
 
+                lock (diagnosticsSync)
+                {
+                    selectedSongDetected = !string.IsNullOrWhiteSpace(currentMemoryReadout.songID);
+                    selectedSongResolved = currentCDLCDetails != null && currentCDLCDetails.IsValid();
+                }
+
                 //Print memreadout if debug is enabled
                 currentMemoryReadout.Print();
             }
@@ -672,6 +734,8 @@ namespace RockSnifferLib.Sniffing
             //Avoid duplicates in the block
             if (!processingQueue.TryAdd(psarcFile, 0)) return;
 
+            RecordCatalogFilesDiscovered(1);
+
             //Add to block to process the psarc file
             bool posted = psarcFileBlock.Post(psarcFile);
 
@@ -679,6 +743,7 @@ namespace RockSnifferLib.Sniffing
             if (!posted)
             {
                 processingQueue.TryRemove(psarcFile, out _);
+                RecordCatalogFileProcessed(false, 0);
                 Logger.LogError("Unable to post {0} to psarcFileBlock", psarcFile);
             }
 
@@ -701,6 +766,31 @@ namespace RockSnifferLib.Sniffing
             }
         }
 
+        private void RecordCatalogFilesDiscovered(int count)
+        {
+            lock (diagnosticsSync)
+            {
+                catalogFilesDiscovered += count;
+                catalogScanComplete = false;
+            }
+        }
+
+        private void RecordCatalogFileProcessed(bool success, int songsLoaded)
+        {
+            lock (diagnosticsSync)
+            {
+                catalogFilesProcessed++;
+                if (!success)
+                {
+                    catalogFilesFailed++;
+                }
+                catalogSongsLoaded += Math.Max(0, songsLoaded);
+                catalogScanComplete =
+                    catalogFilesDiscovered > 0 &&
+                    catalogFilesProcessed >= catalogFilesDiscovered;
+            }
+        }
+
         private void ProcessPsarcFile(string psarcFile)
         {
             var fileInfo = new FileInfo(psarcFile);
@@ -717,6 +807,7 @@ namespace RockSnifferLib.Sniffing
                     "Skipping PSARC file until it is complete and stable: {0}",
                     psarcFile
                 );
+                RecordCatalogFileProcessed(false, 0);
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -731,6 +822,7 @@ namespace RockSnifferLib.Sniffing
             {
                 Logger.LogError("Unable to calculate hash for {0}", psarcFile);
                 Logger.LogException(e);
+                RecordCatalogFileProcessed(false, 0);
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -741,6 +833,7 @@ namespace RockSnifferLib.Sniffing
                     "PSARC file changed while it was being inspected; waiting for another file event: {0}",
                     psarcFile
                 );
+                RecordCatalogFileProcessed(false, 0);
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -748,6 +841,7 @@ namespace RockSnifferLib.Sniffing
             //Return if file is already cached
             if (_cache.Contains(psarcFile, hash))
             {
+                RecordCatalogFileProcessed(true, 0);
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -758,6 +852,7 @@ namespace RockSnifferLib.Sniffing
                     "PSARC file changed before parsing; waiting for another file event: {0}",
                     psarcFile
                 );
+                RecordCatalogFileProcessed(false, 0);
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -772,6 +867,7 @@ namespace RockSnifferLib.Sniffing
             {
                 Logger.LogError("Unable to read {0}", psarcFile);
                 Logger.LogException(e);
+                RecordCatalogFileProcessed(false, 0);
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -788,6 +884,7 @@ namespace RockSnifferLib.Sniffing
                 _cache.Add(psarcFile, allSongDetails);
             }
 
+            RecordCatalogFileProcessed(true, allSongDetails?.Count ?? 0);
             PsarcFileProcessingDone(psarcFile, true);
         }
 
@@ -803,10 +900,14 @@ namespace RockSnifferLib.Sniffing
             path += $"{Path.DirectorySeparatorChar}dlc";
 
             GetAllPsarcFiles(path, psarcFiles);
+            RecordCatalogFilesDiscovered(psarcFiles.Count);
 
             foreach (string psarcFile in psarcFiles)
             {
-                psarcFileBlock.Post(psarcFile);
+                if (!psarcFileBlock.Post(psarcFile))
+                {
+                    RecordCatalogFileProcessed(false, 0);
+                }
             }
 
             Logger.Log("Found {0} psarc files", psarcFiles.Count);

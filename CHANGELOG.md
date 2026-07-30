@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.9-rocklist.5] - 2026-07-29
+
+### Added
+
+- Added privacy-safe runtime diagnostics for memory reads, song resolution, and
+  song-library scanning so host applications can detect and recover from
+  stalled readers.
+
 ## [0.6.9-rocklist.4] - 2026-07-28
 
 ### Fixed
