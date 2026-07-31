@@ -100,6 +100,25 @@ public sealed class PSARCUtilTests : IDisposable
         Assert.False(File.Exists(file.FullName));
     }
 
+    [Fact]
+    public void StablePSARCStopsWaitingAfterCancellation()
+    {
+        var file = CreateFile("cancelled_p.psarc", []);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var ready = PSARCUtil.TryWaitForStablePSARC(
+            file,
+            out _,
+            maxAttempts: 40,
+            delayMilliseconds: 1000,
+            requiredStableObservations: 4,
+            cancellationToken: cancellation.Token
+        );
+
+        Assert.False(ready);
+    }
+
     public void Dispose()
     {
         Directory.Delete(temporaryDirectory, recursive: true);
