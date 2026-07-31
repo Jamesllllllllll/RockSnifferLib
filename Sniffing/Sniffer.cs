@@ -11,6 +11,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
 
@@ -247,11 +248,21 @@ namespace RockSnifferLib.Sniffing
         /// FileSystemWatchers to watch the dlc folder (and any symlinks)
         /// </summary>
         private List<FileSystemWatcher> fileSystemWatchers = new List<FileSystemWatcher>();
+        private readonly object fileSystemWatcherSync = new object();
 
         /// <summary>
         /// An ActionBlock for processing psarc files
         /// </summary>
         private ActionBlock<string> psarcFileBlock;
+        private readonly CancellationTokenSource sniffingCancellation =
+            new CancellationTokenSource();
+
+        /// <summary>
+        /// Tracks file-system events for this Sniffer instance only. A replacement
+        /// Sniffer must not inherit queued paths from a stopped reader.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, byte> processingQueue =
+            new ConcurrentDictionary<string, byte>();
 
         /// <summary>
         /// Instantiate a new Sniffer on process, using cache
@@ -661,9 +672,17 @@ namespace RockSnifferLib.Sniffing
             watcher.Renamed += PsarcFileChanged;
             watcher.Error += Watcher_Error;
 
-            watcher.EnableRaisingEvents = true;
+            lock (fileSystemWatcherSync)
+            {
+                if (!running || sniffingCancellation.IsCancellationRequested)
+                {
+                    watcher.Dispose();
+                    return;
+                }
 
-            fileSystemWatchers.Add(watcher);
+                watcher.EnableRaisingEvents = true;
+                fileSystemWatchers.Add(watcher);
+            }
 
             Logger.Log("Created FileSystemWatcher for {0}", path);
         }
@@ -687,6 +706,8 @@ namespace RockSnifferLib.Sniffing
 
         private async void DoSniffing()
         {
+            var cancellationToken = sniffingCancellation.Token;
+
             // Get path to rs directory
             var path = Path.GetDirectoryName(_rsProcess.MainModule.FileName);
 
@@ -698,7 +719,16 @@ namespace RockSnifferLib.Sniffing
             if (_settings.parallelism > 0) parallelism = _settings.parallelism;
 
             Logger.Log("Using parallelism of {0}", parallelism);
-            psarcFileBlock = new ActionBlock<string>(psarcFile => ProcessPsarcFile(psarcFile), new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = parallelism });
+            psarcFileBlock = new ActionBlock<string>(
+                psarcFile => ProcessPsarcFile(psarcFile, cancellationToken),
+                new ExecutionDataflowBlockOptions()
+                {
+                    MaxDegreeOfParallelism = parallelism,
+                    CancellationToken = cancellationToken,
+                }
+            );
+
+            if (cancellationToken.IsCancellationRequested) return;
 
             // Create main watcher for the dlc folder
             CreateFileSystemWatcher(path + Path.DirectorySeparatorChar + "dlc", "*.psarc");
@@ -710,7 +740,17 @@ namespace RockSnifferLib.Sniffing
             // Create a watcher for each symlink
             foreach (var symlink in symlinks) CreateFileSystemWatcher(symlink, "*.psarc");
 
-            await Task.Run(() => ProcessAllPsarcs(path));
+            try
+            {
+                await Task.Run(
+                    () => ProcessAllPsarcs(path, cancellationToken),
+                    cancellationToken
+                );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Stopping a Sniffer intentionally abandons its queued catalog scan.
+            }
         }
 
         private void Watcher_Error(object sender, ErrorEventArgs e)
@@ -723,10 +763,10 @@ namespace RockSnifferLib.Sniffing
         /// Queue to keep track of files that are due for parsing
         /// to avoid parsing the same file multiple times
         /// </summary>
-        private static ConcurrentDictionary<string, byte> processingQueue =
-            new ConcurrentDictionary<string, byte>();
         private void PsarcFileChanged(object sender, FileSystemEventArgs e)
         {
+            if (!running || sniffingCancellation.IsCancellationRequested) return;
+
             if (Logger.logProcessingQueue) Logger.Log("FileSystemWatcher: {0} \"{1}\"", e.ChangeType, e.Name);
 
             var psarcFile = e.FullPath;
@@ -754,7 +794,11 @@ namespace RockSnifferLib.Sniffing
         private void PsarcFileProcessingDone(string psarcFile, bool success)
         {
             //If file was in the queue (triggered by filesystemwatcher)
-            if (processingQueue.TryRemove(psarcFile, out _))
+            if (
+                processingQueue.TryRemove(psarcFile, out _) &&
+                running &&
+                !sniffingCancellation.IsCancellationRequested
+            )
             {
                 //If processing was successful, invoke event
                 OnPsarcInstalled?.Invoke(this, new OnPsarcInstalledArgs() { FilePath = psarcFile, ParseSuccess = success });
@@ -791,15 +835,34 @@ namespace RockSnifferLib.Sniffing
             }
         }
 
-        private void ProcessPsarcFile(string psarcFile)
+        private void ProcessPsarcFile(
+            string psarcFile,
+            CancellationToken cancellationToken
+        )
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                processingQueue.TryRemove(psarcFile, out _);
+                return;
+            }
+
             var fileInfo = new FileInfo(psarcFile);
 
             var isFileSystemEvent = processingQueue.ContainsKey(psarcFile);
             PSARCUtil.PSARCFileSnapshot readySnapshot;
             var isReady = isFileSystemEvent
-                ? PSARCUtil.TryWaitForStablePSARC(fileInfo, out readySnapshot)
+                ? PSARCUtil.TryWaitForStablePSARC(
+                    fileInfo,
+                    out readySnapshot,
+                    cancellationToken: cancellationToken
+                )
                 : PSARCUtil.TryGetPSARCFileSnapshot(fileInfo, out readySnapshot);
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                processingQueue.TryRemove(psarcFile, out _);
+                return;
+            }
 
             if (!isReady)
             {
@@ -827,6 +890,12 @@ namespace RockSnifferLib.Sniffing
                 return;
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                processingQueue.TryRemove(psarcFile, out _);
+                return;
+            }
+
             if (!PSARCUtil.MatchesPSARCFileSnapshot(fileInfo, readySnapshot))
             {
                 Logger.Log(
@@ -835,6 +904,12 @@ namespace RockSnifferLib.Sniffing
                 );
                 RecordCatalogFileProcessed(false, 0);
                 PsarcFileProcessingDone(psarcFile, false);
+                return;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                processingQueue.TryRemove(psarcFile, out _);
                 return;
             }
 
@@ -857,6 +932,12 @@ namespace RockSnifferLib.Sniffing
                 return;
             }
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                processingQueue.TryRemove(psarcFile, out _);
+                return;
+            }
+
             //Read psarc data
             Dictionary<string, SongDetails> allSongDetails;
             try
@@ -869,6 +950,12 @@ namespace RockSnifferLib.Sniffing
                 Logger.LogException(e);
                 RecordCatalogFileProcessed(false, 0);
                 PsarcFileProcessingDone(psarcFile, false);
+                return;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                processingQueue.TryRemove(psarcFile, out _);
                 return;
             }
 
@@ -888,7 +975,10 @@ namespace RockSnifferLib.Sniffing
             PsarcFileProcessingDone(psarcFile, true);
         }
 
-        private void ProcessAllPsarcs(string path)
+        private void ProcessAllPsarcs(
+            string path,
+            CancellationToken cancellationToken
+        )
         {
             //Build a list of all dlc psarc files, including songs.psarc
             List<string> psarcFiles = new List<string>
@@ -900,12 +990,17 @@ namespace RockSnifferLib.Sniffing
             path += $"{Path.DirectorySeparatorChar}dlc";
 
             GetAllPsarcFiles(path, psarcFiles);
+            if (cancellationToken.IsCancellationRequested) return;
+
             RecordCatalogFilesDiscovered(psarcFiles.Count);
 
             foreach (string psarcFile in psarcFiles)
             {
+                if (cancellationToken.IsCancellationRequested) return;
+
                 if (!psarcFileBlock.Post(psarcFile))
                 {
+                    if (cancellationToken.IsCancellationRequested) return;
                     RecordCatalogFileProcessed(false, 0);
                 }
             }
@@ -924,14 +1019,22 @@ namespace RockSnifferLib.Sniffing
         /// </summary>
         public void Stop()
         {
-            running = false;
+            if (!running) return;
 
-            foreach (var watcher in fileSystemWatchers)
+            running = false;
+            sniffingCancellation.Cancel();
+
+            lock (fileSystemWatcherSync)
             {
-                watcher.Dispose();
+                foreach (var watcher in fileSystemWatchers)
+                {
+                    watcher.Dispose();
+                }
+
+                fileSystemWatchers.Clear();
             }
 
-            fileSystemWatchers.Clear();
+            processingQueue.Clear();
         }
 
         /// <summary>

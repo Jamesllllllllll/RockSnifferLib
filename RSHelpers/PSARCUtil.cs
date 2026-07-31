@@ -75,7 +75,8 @@ namespace RockSnifferLib.RSHelpers
             out PSARCFileSnapshot snapshot,
             int maxAttempts = PSARCReadyAttempts,
             int delayMilliseconds = PSARCReadyDelayMilliseconds,
-            int requiredStableObservations = PSARCStableObservations
+            int requiredStableObservations = PSARCStableObservations,
+            CancellationToken cancellationToken = default
         )
         {
             if (maxAttempts <= 0)
@@ -99,6 +100,11 @@ namespace RockSnifferLib.RSHelpers
 
             for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return false;
+                }
+
                 if (TryGetPSARCFileSnapshot(fileInfo, out var currentSnapshot))
                 {
                     stableObservations =
@@ -122,7 +128,10 @@ namespace RockSnifferLib.RSHelpers
 
                 if (attempt + 1 < maxAttempts && delayMilliseconds > 0)
                 {
-                    Thread.Sleep(delayMilliseconds);
+                    if (cancellationToken.WaitHandle.WaitOne(delayMilliseconds))
+                    {
+                        return false;
+                    }
                 }
             }
 

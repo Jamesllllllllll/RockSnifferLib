@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.9-rocklist.6] - 2026-07-31
+
+### Fixed
+
+- Stopping or replacing a reader now cancels its pending song-library scan so
+  old scans do not continue consuming disk and processor time in the
+  background.
+
 ## [0.6.9-rocklist.5] - 2026-07-29
 
 ### Added
