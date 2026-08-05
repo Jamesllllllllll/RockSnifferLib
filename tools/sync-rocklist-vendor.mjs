@@ -12,6 +12,7 @@ const managedEntries = [
   "Cache",
   "Config",
   "Events",
+  "Library",
   "Logging",
   "RSHelpers",
   "Sniffing",
