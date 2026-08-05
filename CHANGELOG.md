@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.9-rocklist.7] - 2026-08-05
 
 ### Added
 
