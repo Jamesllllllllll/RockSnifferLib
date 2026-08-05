@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added a reusable, process-independent PSARC library indexer for applications
+  that manage multiple local song folders.
+- Library scans reuse unchanged local records, isolate missing folders and
+  unreadable files, avoid linked-directory loops, and support cancellation and
+  bounded parallel work.
+
 ## [0.6.9-rocklist.6] - 2026-07-31
 
 ### Fixed

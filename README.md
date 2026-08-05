@@ -74,6 +74,29 @@ the sniffer after supplying their settings and cache implementation. The
 existing event types under `Events/` and data models under `Sniffing/` and
 `RSHelpers/` are the supported integration surface today.
 
+Applications that need a local song-library inventory without attaching to a
+Rocksmith process can use `PsarcLibraryIndexer` from `RockSnifferLib.Library`.
+It accepts one or more local roots, scans Windows `*_p.psarc` files with bounded
+parallel work, and returns per-root files, song summaries, health, and errors.
+Pass the previous `PsarcLibraryFile` records back through
+`PsarcLibraryScanOptions.PreviousFiles` to reuse files whose size and modified
+time have not changed. The caller chooses how and where those records are
+persisted. `PsarcLibraryScanOptions.Progress` can update a host application's
+scan UI. The indexer has no network or account behavior.
+
+```csharp
+var indexer = new PsarcLibraryIndexer();
+var result = await indexer.ScanAsync(
+    new[] { new PsarcLibraryRoot("archive", archivePath) },
+    new PsarcLibraryScanOptions
+    {
+        MaxParallelism = 2,
+        PreviousFiles = previousFiles,
+    },
+    cancellationToken
+);
+```
+
 More complete API examples and a packaged distribution are planned as the
 multiplayer API stabilizes.
 

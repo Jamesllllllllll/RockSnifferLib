@@ -432,18 +432,31 @@ namespace RockSnifferLib.RSHelpers
 
         public static string GetFileHash(FileInfo fileInfo)
         {
+            return GetFileHash(fileInfo, CancellationToken.None);
+        }
+
+        public static string GetFileHash(
+            FileInfo fileInfo,
+            CancellationToken cancellationToken
+        )
+        {
             WaitForFile(fileInfo);
 
-            //Calculate file hash
-            using (var md5 = MD5.Create())
+            cancellationToken.ThrowIfCancellationRequested();
+            using (var incrementalHash = IncrementalHash.CreateHash(HashAlgorithmName.MD5))
             {
                 using (var stream = OpenReadShared(fileInfo))
                 {
-                    var hash = Convert.ToBase64String(md5.ComputeHash(stream));
-                    return hash;
+                    var buffer = new byte[1024 * 1024];
+                    int bytesRead;
+                    while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        incrementalHash.AppendData(buffer, 0, bytesRead);
+                    }
+                    return Convert.ToBase64String(incrementalHash.GetHashAndReset());
                 }
             }
-
         }
     }
 }
