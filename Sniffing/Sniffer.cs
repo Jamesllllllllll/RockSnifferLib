@@ -404,7 +404,12 @@ namespace RockSnifferLib.Sniffing
                     successfulMemoryReads++;
                 }
 
-                if (newReadout.songID != currentMemoryReadout.songID || (currentCDLCDetails == null || !currentCDLCDetails.IsValid()))
+                bool selectedSongChanged = !string.Equals(
+                    newReadout.songID,
+                    currentMemoryReadout.songID,
+                    StringComparison.OrdinalIgnoreCase
+                );
+                if (selectedSongChanged || (currentCDLCDetails == null || !currentCDLCDetails.IsValid()))
                 {
                     // ─────────────────────────────────────────────────────────────────
                     // FORCE-END OLD SONG (v0.6.5; v0.6.9 completion-flag rewrite)
@@ -438,14 +443,25 @@ namespace RockSnifferLib.Sniffing
                         paused = false;
                     }
 
-                    var newDetails = _cache.Get(newReadout.songID);
+                    var cachedDetails = _cache.Get(newReadout.songID);
+                    var newDetails = SongSelectionGuard.ResolveDetails(
+                        newReadout.songID,
+                        currentCDLCDetails,
+                        cachedDetails
+                    );
 
-                    if (newDetails != null && newDetails.IsValid())
+                    if (!ReferenceEquals(newDetails, currentCDLCDetails))
                     {
-                        currentCDLCDetails = _cache.Get(newReadout.songID);
+                        currentCDLCDetails = newDetails;
                         OnSongChanged?.Invoke(this, new OnSongChangedArgs { songDetails = currentCDLCDetails });
-                        currentCDLCDetails.Print();
+                        if (currentCDLCDetails.IsValid())
+                        {
+                            currentCDLCDetails.Print();
+                        }
+                    }
 
+                    if (selectedSongChanged)
+                    {
                         // Reset pause / timing state on song change
                         lowTime = float.MaxValue;
                         initTime = float.MaxValue;
@@ -625,7 +641,10 @@ namespace RockSnifferLib.Sniffing
                 lock (diagnosticsSync)
                 {
                     selectedSongDetected = !string.IsNullOrWhiteSpace(currentMemoryReadout.songID);
-                    selectedSongResolved = currentCDLCDetails != null && currentCDLCDetails.IsValid();
+                    selectedSongResolved = SongSelectionGuard.MatchesSelectedSong(
+                        currentCDLCDetails,
+                        currentMemoryReadout.songID
+                    );
                 }
 
                 //Print memreadout if debug is enabled
@@ -1043,7 +1062,10 @@ namespace RockSnifferLib.Sniffing
         /// 
         private void LogSongStartIfPossible()
         {
-            if (currentCDLCDetails == null || !currentCDLCDetails.IsValid())
+            if (!SongSelectionGuard.MatchesSelectedSong(
+                currentCDLCDetails,
+                currentMemoryReadout?.songID
+            ))
             {
                 return;
             }
