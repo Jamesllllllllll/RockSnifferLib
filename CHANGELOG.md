@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.9-rocklist.8] - 2026-08-06
+
+### Fixed
+
+- An unrecognized selected song now clears the previous song details instead
+  of leaving applications with a stale title.
+- Song-start events now require the resolved song details to match Rocksmith's
+  current song ID.
+
 ## [0.6.9-rocklist.7] - 2026-08-05
 
 ### Added
