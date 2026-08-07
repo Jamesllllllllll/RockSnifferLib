@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.9-rocklist.9] - 2026-08-07
+
+### Changed
+
+- Large PSARC library scans now use a fixed worker pool, keeping memory use
+  bounded even when folders contain thousands of files.
+
 ## [0.6.9-rocklist.8] - 2026-08-06
 
 ### Fixed
