@@ -108,74 +108,15 @@ namespace RockSnifferLib.Library
             }
 
             var indexedFiles = new ConcurrentBag<PsarcLibraryFile>();
-            using var parallelism = new SemaphoreSlim(maxParallelism, maxParallelism);
-            var tasks = files.Select(async path =>
-            {
-                await parallelism.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var fileInfo = new FileInfo(path);
-                    if (
-                        previousFiles.TryGetValue(path, out var previous) &&
-                        previous.HasSameFileStamp(fileInfo)
-                    )
-                    {
-                        indexedFiles.Add(previous.ReuseForRoot(root.Id));
-                        Interlocked.Increment(ref reusedCount);
-                        return;
-                    }
-
-                    var inspected = await inspector
-                        .InspectAsync(root.Id, fileInfo, cancellationToken)
-                        .ConfigureAwait(false);
-                    indexedFiles.Add(inspected);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    // The root result below records cancellation once for the scan.
-                }
-                catch (PsarcFileInspectionException error)
-                {
-                    Interlocked.Increment(ref failedCount);
-                    errors.Add(new PsarcLibraryError(
-                        root.Id,
-                        path,
-                        error.Code,
-                        error.Message
-                    ));
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    Interlocked.Increment(ref failedCount);
-                    errors.Add(new PsarcLibraryError(
-                        root.Id,
-                        path,
-                        "file_access_denied",
-                        "The PSARC file could not be accessed."
-                    ));
-                }
-                catch (Exception)
-                {
-                    Interlocked.Increment(ref failedCount);
-                    errors.Add(new PsarcLibraryError(
-                        root.Id,
-                        path,
-                        "file_read_failed",
-                        "The PSARC file could not be inspected."
-                    ));
-                }
-                finally
-                {
-                    Interlocked.Increment(ref processedCount);
-                    ReportProgress();
-                    parallelism.Release();
-                }
-            }).ToArray();
+            var nextFileIndex = -1;
+            var workers = Enumerable
+                .Range(0, Math.Min(maxParallelism, files.Length))
+                .Select(_ => ProcessFilesAsync())
+                .ToArray();
 
             try
             {
-                await Task.WhenAll(tasks).ConfigureAwait(false);
+                await Task.WhenAll(workers).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -196,6 +137,78 @@ namespace RockSnifferLib.Library
                     : PsarcLibraryRootStatus.Ready;
 
             return new PsarcLibraryRootResult(root, status, orderedFiles, orderedErrors);
+
+            async Task ProcessFilesAsync()
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    var fileIndex = Interlocked.Increment(ref nextFileIndex);
+                    if (fileIndex >= files.Length)
+                    {
+                        return;
+                    }
+
+                    var path = files[fileIndex];
+                    try
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var fileInfo = new FileInfo(path);
+                        if (
+                            previousFiles.TryGetValue(path, out var previous) &&
+                            previous.HasSameFileStamp(fileInfo)
+                        )
+                        {
+                            indexedFiles.Add(previous.ReuseForRoot(root.Id));
+                            Interlocked.Increment(ref reusedCount);
+                            continue;
+                        }
+
+                        var inspected = await inspector
+                            .InspectAsync(root.Id, fileInfo, cancellationToken)
+                            .ConfigureAwait(false);
+                        indexedFiles.Add(inspected);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (PsarcFileInspectionException error)
+                    {
+                        Interlocked.Increment(ref failedCount);
+                        errors.Add(new PsarcLibraryError(
+                            root.Id,
+                            path,
+                            error.Code,
+                            error.Message
+                        ));
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        Interlocked.Increment(ref failedCount);
+                        errors.Add(new PsarcLibraryError(
+                            root.Id,
+                            path,
+                            "file_access_denied",
+                            "The PSARC file could not be accessed."
+                        ));
+                    }
+                    catch (Exception)
+                    {
+                        Interlocked.Increment(ref failedCount);
+                        errors.Add(new PsarcLibraryError(
+                            root.Id,
+                            path,
+                            "file_read_failed",
+                            "The PSARC file could not be inspected."
+                        ));
+                    }
+                    finally
+                    {
+                        Interlocked.Increment(ref processedCount);
+                        ReportProgress();
+                    }
+                }
+            }
 
             void ReportProgress()
             {

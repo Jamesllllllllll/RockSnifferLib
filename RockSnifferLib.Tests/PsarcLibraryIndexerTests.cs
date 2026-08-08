@@ -170,6 +170,26 @@ public sealed class PsarcLibraryIndexerTests : IDisposable
         Assert.Equal(1, final.FailedFiles);
     }
 
+    [Fact]
+    public async Task LargeScansUseOnlyTheConfiguredNumberOfWorkers()
+    {
+        for (var index = 0; index < 500; index++)
+        {
+            CreateFile($"chart-{index:D4}_p.psarc");
+        }
+        var inspector = new ConcurrencyTrackingInspector();
+        var indexer = new PsarcLibraryIndexer(inspector);
+
+        var result = await indexer.ScanAsync(
+            new[] { new PsarcLibraryRoot("backup", temporaryDirectory) },
+            new PsarcLibraryScanOptions { MaxParallelism = 3 }
+        );
+
+        Assert.Equal(500, Assert.Single(result.Roots).Files.Count);
+        Assert.Equal(500, inspector.CallCount);
+        Assert.InRange(inspector.MaxConcurrency, 1, 3);
+    }
+
     public void Dispose()
     {
         Directory.Delete(temporaryDirectory, recursive: true);
@@ -250,6 +270,53 @@ public sealed class PsarcLibraryIndexerTests : IDisposable
             lock (Values)
             {
                 Values.Add(value);
+            }
+        }
+    }
+
+    private sealed class ConcurrencyTrackingInspector : IPsarcFileInspector
+    {
+        private int activeCount;
+        private int callCount;
+        private int maxConcurrency;
+
+        public int CallCount => callCount;
+        public int MaxConcurrency => maxConcurrency;
+
+        public async Task<PsarcLibraryFile> InspectAsync(
+            string rootId,
+            FileInfo fileInfo,
+            CancellationToken cancellationToken
+        )
+        {
+            Interlocked.Increment(ref callCount);
+            var active = Interlocked.Increment(ref activeCount);
+            int observed;
+            while (
+                active > (observed = Volatile.Read(ref maxConcurrency)) &&
+                Interlocked.CompareExchange(ref maxConcurrency, active, observed) != observed
+            )
+            {
+            }
+
+            try
+            {
+                await Task.Delay(1, cancellationToken);
+                fileInfo.Refresh();
+                return new PsarcLibraryFile(
+                    rootId,
+                    fileInfo.FullName,
+                    fileInfo.Length,
+                    fileInfo.LastWriteTimeUtc,
+                    "md5",
+                    "fake-hash",
+                    Array.Empty<PsarcLibrarySong>(),
+                    false
+                );
+            }
+            finally
+            {
+                Interlocked.Decrement(ref activeCount);
             }
         }
     }
