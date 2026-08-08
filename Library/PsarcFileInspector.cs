@@ -68,7 +68,7 @@ namespace RockSnifferLib.Library
             string fileHash;
             try
             {
-                fileHash = PSARCUtil.GetFileHash(fileInfo, cancellationToken);
+                fileHash = PSARCUtil.GetFileSha256(fileInfo, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -136,7 +136,7 @@ namespace RockSnifferLib.Library
                 fileInfo.FullName,
                 readySnapshot.Length,
                 readySnapshot.LastWriteTimeUtc,
-                "md5",
+                "sha256",
                 fileHash,
                 songs,
                 false
