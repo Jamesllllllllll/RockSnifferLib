@@ -440,10 +440,40 @@ namespace RockSnifferLib.RSHelpers
             CancellationToken cancellationToken
         )
         {
+            return Convert.ToBase64String(GetFileHashBytes(
+                fileInfo,
+                HashAlgorithmName.MD5,
+                cancellationToken
+            ));
+        }
+
+        public static string GetFileSha256(FileInfo fileInfo)
+        {
+            return GetFileSha256(fileInfo, CancellationToken.None);
+        }
+
+        public static string GetFileSha256(
+            FileInfo fileInfo,
+            CancellationToken cancellationToken
+        )
+        {
+            return Convert.ToHexString(GetFileHashBytes(
+                fileInfo,
+                HashAlgorithmName.SHA256,
+                cancellationToken
+            )).ToLowerInvariant();
+        }
+
+        private static byte[] GetFileHashBytes(
+            FileInfo fileInfo,
+            HashAlgorithmName algorithm,
+            CancellationToken cancellationToken
+        )
+        {
             WaitForFile(fileInfo);
 
             cancellationToken.ThrowIfCancellationRequested();
-            using (var incrementalHash = IncrementalHash.CreateHash(HashAlgorithmName.MD5))
+            using (var incrementalHash = IncrementalHash.CreateHash(algorithm))
             {
                 using (var stream = OpenReadShared(fileInfo))
                 {
@@ -454,7 +484,7 @@ namespace RockSnifferLib.RSHelpers
                         cancellationToken.ThrowIfCancellationRequested();
                         incrementalHash.AppendData(buffer, 0, bytesRead);
                     }
-                    return Convert.ToBase64String(incrementalHash.GetHashAndReset());
+                    return incrementalHash.GetHashAndReset();
                 }
             }
         }

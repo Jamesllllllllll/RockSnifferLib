@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.9-rocklist.10] - 2026-08-08
+
+### Changed
+
+- PSARC library scans now identify complete, stable files with a lowercase
+  SHA-256 fingerprint. The legacy MD5 helper remains available for existing
+  RockSniffer integrations.
+
 ## [0.6.9-rocklist.9] - 2026-08-07
 
 ### Changed
