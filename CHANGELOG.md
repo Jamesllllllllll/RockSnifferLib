@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.9-rocklist.11] - 2026-08-09
+
+### Changed
+
+- Existing PSARC libraries now begin scanning without waiting on every file,
+  while new and recently changed files still wait until they are stable.
+
 ## [0.6.9-rocklist.10] - 2026-08-08
 
 ### Changed

@@ -53,7 +53,7 @@ namespace RockSnifferLib.Library
         )
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!PSARCUtil.TryWaitForStablePSARC(
+            if (!PSARCUtil.TryGetReadyPSARCFileSnapshot(
                 fileInfo,
                 out var readySnapshot,
                 cancellationToken: cancellationToken

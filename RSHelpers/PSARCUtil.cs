@@ -138,6 +138,62 @@ namespace RockSnifferLib.RSHelpers
             return false;
         }
 
+        internal static bool TryGetReadyPSARCFileSnapshot(
+            FileInfo fileInfo,
+            out PSARCFileSnapshot snapshot,
+            int maxAttempts = PSARCReadyAttempts,
+            int delayMilliseconds = PSARCReadyDelayMilliseconds,
+            int requiredStableObservations = PSARCStableObservations,
+            CancellationToken cancellationToken = default
+        )
+        {
+            if (maxAttempts <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+            }
+
+            if (delayMilliseconds < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(delayMilliseconds));
+            }
+
+            if (requiredStableObservations <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(requiredStableObservations));
+            }
+
+            snapshot = default;
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            if (TryGetPSARCFileSnapshot(fileInfo, out var existingSnapshot))
+            {
+                // An existing file whose last write predates the normal polling
+                // window has already supplied the same stability evidence. New
+                // and recently changed files still use the conservative wait.
+                var requiredStableAgeMilliseconds =
+                    (long)delayMilliseconds * Math.Max(0, requiredStableObservations - 1);
+                var stableCutoffUtc = DateTime.UtcNow -
+                    TimeSpan.FromMilliseconds(requiredStableAgeMilliseconds);
+                if (existingSnapshot.LastWriteTimeUtc <= stableCutoffUtc)
+                {
+                    snapshot = existingSnapshot;
+                    return true;
+                }
+            }
+
+            return TryWaitForStablePSARC(
+                fileInfo,
+                out snapshot,
+                maxAttempts,
+                delayMilliseconds,
+                requiredStableObservations,
+                cancellationToken
+            );
+        }
+
         internal static bool MatchesPSARCFileSnapshot(
             FileInfo fileInfo,
             PSARCFileSnapshot expectedSnapshot
