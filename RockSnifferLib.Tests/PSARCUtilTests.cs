@@ -90,6 +90,59 @@ public sealed class PSARCUtilTests : IDisposable
     }
 
     [Fact]
+    public void ReadyPSARCAcceptsAnExistingFileWithoutPollingAgain()
+    {
+        var file = CreatePSARC("existing_p.psarc");
+        file.LastWriteTimeUtc = DateTime.UtcNow.AddSeconds(-10);
+
+        var ready = PSARCUtil.TryGetReadyPSARCFileSnapshot(
+            file,
+            out var snapshot,
+            maxAttempts: 1,
+            delayMilliseconds: 1000,
+            requiredStableObservations: 4
+        );
+
+        Assert.True(ready);
+        Assert.Equal(file.Length, snapshot.Length);
+        Assert.Equal(file.LastWriteTimeUtc, snapshot.LastWriteTimeUtc);
+    }
+
+    [Fact]
+    public void ReadyPSARCStillRequiresRecentFilesToStabilize()
+    {
+        var file = CreatePSARC("recent_p.psarc");
+        file.LastWriteTimeUtc = DateTime.UtcNow;
+
+        var ready = PSARCUtil.TryGetReadyPSARCFileSnapshot(
+            file,
+            out _,
+            maxAttempts: 1,
+            delayMilliseconds: 1000,
+            requiredStableObservations: 4
+        );
+
+        Assert.False(ready);
+    }
+
+    [Fact]
+    public void ReadyPSARCDoesNotUseTheExistingFileFastPathAfterCancellation()
+    {
+        var file = CreatePSARC("cancelled-existing_p.psarc");
+        file.LastWriteTimeUtc = DateTime.UtcNow.AddSeconds(-10);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var ready = PSARCUtil.TryGetReadyPSARCFileSnapshot(
+            file,
+            out _,
+            cancellationToken: cancellation.Token
+        );
+
+        Assert.False(ready);
+    }
+
+    [Fact]
     public void SharedReadDoesNotPreventDeletingDownloadPlaceholder()
     {
         var file = CreatePSARC("replaceable_p.psarc");
