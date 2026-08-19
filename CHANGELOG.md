@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.9-rocklist.12] - 2026-08-18
+
+### Added
+
+- Song-library diagnostics now identify skipped files and readable failure
+  reasons locally, keep aggregate reason counts available to host applications,
+  and support rescanning after files are repaired or replaced.
+
+### Fixed
+
+- A file that succeeds on a later attempt is removed from the current skipped
+  file count instead of leaving a stale library warning.
+
 ## [0.6.9-rocklist.11] - 2026-08-09
 
 ### Changed
