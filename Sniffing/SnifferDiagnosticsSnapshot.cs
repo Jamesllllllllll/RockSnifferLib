@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace RockSnifferLib.Sniffing
 {
     /// <summary>
@@ -14,6 +17,11 @@ namespace RockSnifferLib.Sniffing
         public int catalogFilesFailed { get; init; }
         public int catalogSongsLoaded { get; init; }
         public bool catalogScanComplete { get; init; }
+        public IReadOnlyList<CatalogFileFailure> catalogFileFailures { get; init; } =
+            Array.Empty<CatalogFileFailure>();
+        public IReadOnlyDictionary<string, int> catalogFailureReasonCounts { get; init; } =
+            new Dictionary<string, int>();
+        public bool catalogFileFailuresTruncated { get; init; }
         public bool selectedSongDetected { get; init; }
         public bool selectedSongResolved { get; init; }
     }

@@ -233,9 +233,10 @@ namespace RockSnifferLib.Sniffing
         private string lastMemoryReadErrorType = null;
         private int catalogFilesDiscovered = 0;
         private int catalogFilesProcessed = 0;
-        private int catalogFilesFailed = 0;
         private int catalogSongsLoaded = 0;
         private bool catalogScanComplete = false;
+        private readonly CatalogFileFailureTracker catalogFileFailureTracker =
+            new CatalogFileFailureTracker();
         private bool selectedSongDetected = false;
         private bool selectedSongResolved = false;
 
@@ -298,8 +299,9 @@ namespace RockSnifferLib.Sniffing
         }
 
         /// <summary>
-        /// Returns aggregate runtime health without file paths, song identifiers,
-        /// memory values, or package contents.
+        /// Returns runtime health and a bounded local-only list of unreadable files.
+        /// Host applications must keep file paths local unless the user explicitly
+        /// chooses to share them.
         /// </summary>
         public SnifferDiagnosticsSnapshot GetDiagnostics()
         {
@@ -313,9 +315,14 @@ namespace RockSnifferLib.Sniffing
                     lastMemoryReadErrorType = lastMemoryReadErrorType,
                     catalogFilesDiscovered = catalogFilesDiscovered,
                     catalogFilesProcessed = catalogFilesProcessed,
-                    catalogFilesFailed = catalogFilesFailed,
+                    catalogFilesFailed = catalogFileFailureTracker.Count,
                     catalogSongsLoaded = catalogSongsLoaded,
                     catalogScanComplete = catalogScanComplete,
+                    catalogFileFailures = catalogFileFailureTracker.GetFailures(),
+                    catalogFailureReasonCounts =
+                        catalogFileFailureTracker.GetReasonCounts(),
+                    catalogFileFailuresTruncated =
+                        catalogFileFailureTracker.IsTruncated,
                     selectedSongDetected = selectedSongDetected,
                     selectedSongResolved = selectedSongResolved,
                 };
@@ -339,6 +346,40 @@ namespace RockSnifferLib.Sniffing
         public void TriggerEnumeration()
         {
             memReader.TriggerEnumeration();
+        }
+
+        /// <summary>
+        /// Starts a fresh scan of the active Rocksmith song library after the
+        /// previous scan has completed.
+        /// </summary>
+        public bool TryRescanCatalog()
+        {
+            string? rocksmithPath;
+            lock (diagnosticsSync)
+            {
+                if (!running || !catalogScanComplete)
+                {
+                    return false;
+                }
+
+                rocksmithPath = Path.GetDirectoryName(_rsProcess.MainModule?.FileName);
+                if (string.IsNullOrWhiteSpace(rocksmithPath))
+                {
+                    return false;
+                }
+
+                catalogFilesDiscovered = 0;
+                catalogFilesProcessed = 0;
+                catalogSongsLoaded = 0;
+                catalogScanComplete = false;
+                catalogFileFailureTracker.Clear();
+            }
+
+            _ = Task.Run(
+                () => ProcessAllPsarcs(rocksmithPath, sniffingCancellation.Token),
+                sniffingCancellation.Token
+            );
+            return true;
         }
 
         /// <summary>
@@ -802,7 +843,12 @@ namespace RockSnifferLib.Sniffing
             if (!posted)
             {
                 processingQueue.TryRemove(psarcFile, out _);
-                RecordCatalogFileProcessed(false, 0);
+                RecordCatalogFileProcessed(
+                    psarcFile,
+                    false,
+                    0,
+                    CatalogFileFailureReasons.QueueFailed
+                );
                 Logger.LogError("Unable to post {0} to psarcFileBlock", psarcFile);
             }
 
@@ -838,14 +884,26 @@ namespace RockSnifferLib.Sniffing
             }
         }
 
-        private void RecordCatalogFileProcessed(bool success, int songsLoaded)
+        private void RecordCatalogFileProcessed(
+            string psarcFile,
+            bool success,
+            int songsLoaded,
+            string? failureReason = null
+        )
         {
             lock (diagnosticsSync)
             {
                 catalogFilesProcessed++;
-                if (!success)
+                if (success)
                 {
-                    catalogFilesFailed++;
+                    catalogFileFailureTracker.RecordSuccess(psarcFile);
+                }
+                else
+                {
+                    catalogFileFailureTracker.RecordFailure(
+                        psarcFile,
+                        failureReason ?? CatalogFileFailureReasons.ReadFailed
+                    );
                 }
                 catalogSongsLoaded += Math.Max(0, songsLoaded);
                 catalogScanComplete =
@@ -889,7 +947,12 @@ namespace RockSnifferLib.Sniffing
                     "Skipping PSARC file until it is complete and stable: {0}",
                     psarcFile
                 );
-                RecordCatalogFileProcessed(false, 0);
+                RecordCatalogFileProcessed(
+                    psarcFile,
+                    false,
+                    0,
+                    CatalogFileFailureReasons.NotReady
+                );
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -904,7 +967,12 @@ namespace RockSnifferLib.Sniffing
             {
                 Logger.LogError("Unable to calculate hash for {0}", psarcFile);
                 Logger.LogException(e);
-                RecordCatalogFileProcessed(false, 0);
+                RecordCatalogFileProcessed(
+                    psarcFile,
+                    false,
+                    0,
+                    CatalogFileFailureReasons.HashFailed
+                );
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -921,7 +989,12 @@ namespace RockSnifferLib.Sniffing
                     "PSARC file changed while it was being inspected; waiting for another file event: {0}",
                     psarcFile
                 );
-                RecordCatalogFileProcessed(false, 0);
+                RecordCatalogFileProcessed(
+                    psarcFile,
+                    false,
+                    0,
+                    CatalogFileFailureReasons.ChangedDuringScan
+                );
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -935,7 +1008,7 @@ namespace RockSnifferLib.Sniffing
             //Return if file is already cached
             if (_cache.Contains(psarcFile, hash))
             {
-                RecordCatalogFileProcessed(true, 0);
+                RecordCatalogFileProcessed(psarcFile, true, 0);
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -946,7 +1019,12 @@ namespace RockSnifferLib.Sniffing
                     "PSARC file changed before parsing; waiting for another file event: {0}",
                     psarcFile
                 );
-                RecordCatalogFileProcessed(false, 0);
+                RecordCatalogFileProcessed(
+                    psarcFile,
+                    false,
+                    0,
+                    CatalogFileFailureReasons.ChangedDuringScan
+                );
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -967,7 +1045,12 @@ namespace RockSnifferLib.Sniffing
             {
                 Logger.LogError("Unable to read {0}", psarcFile);
                 Logger.LogException(e);
-                RecordCatalogFileProcessed(false, 0);
+                RecordCatalogFileProcessed(
+                    psarcFile,
+                    false,
+                    0,
+                    CatalogFileFailureReasons.ReadFailed
+                );
                 PsarcFileProcessingDone(psarcFile, false);
                 return;
             }
@@ -990,7 +1073,7 @@ namespace RockSnifferLib.Sniffing
                 _cache.Add(psarcFile, allSongDetails);
             }
 
-            RecordCatalogFileProcessed(true, allSongDetails?.Count ?? 0);
+            RecordCatalogFileProcessed(psarcFile, true, allSongDetails?.Count ?? 0);
             PsarcFileProcessingDone(psarcFile, true);
         }
 
@@ -1020,7 +1103,12 @@ namespace RockSnifferLib.Sniffing
                 if (!psarcFileBlock.Post(psarcFile))
                 {
                     if (cancellationToken.IsCancellationRequested) return;
-                    RecordCatalogFileProcessed(false, 0);
+                    RecordCatalogFileProcessed(
+                        psarcFile,
+                        false,
+                        0,
+                        CatalogFileFailureReasons.QueueFailed
+                    );
                 }
             }
 
