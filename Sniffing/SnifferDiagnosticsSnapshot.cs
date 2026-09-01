@@ -24,5 +24,7 @@ namespace RockSnifferLib.Sniffing
         public bool catalogFileFailuresTruncated { get; init; }
         public bool selectedSongDetected { get; init; }
         public bool selectedSongResolved { get; init; }
+        public string selectedSongResolution { get; init; } =
+            SongSelectionResolution.NotDetected;
     }
 }
