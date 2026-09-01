@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.9-rocklist.13] - 2026-09-01
+
+### Added
+
+- Song-selection diagnostics now distinguish cache misses, invalid cached
+  details, and mismatched cached song IDs without exposing song metadata or
+  local file paths.
+
 ## [0.6.9-rocklist.12] - 2026-08-18
 
 ### Added

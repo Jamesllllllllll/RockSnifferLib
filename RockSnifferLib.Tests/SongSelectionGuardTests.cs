@@ -83,6 +83,47 @@ public sealed class SongSelectionGuardTests
         );
     }
 
+    [Fact]
+    public void ReportsWhySelectedSongDetailsAreUnavailable()
+    {
+        Assert.Equal(
+            SongSelectionResolution.NotDetected,
+            SongSelectionGuard.GetResolution(null, null, null)
+        );
+        Assert.Equal(
+            SongSelectionResolution.CacheMiss,
+            SongSelectionGuard.GetResolution(
+                new SongDetails { songID = "new-song" },
+                "new-song",
+                null
+            )
+        );
+        Assert.Equal(
+            SongSelectionResolution.CachedDetailsInvalid,
+            SongSelectionGuard.GetResolution(
+                new SongDetails { songID = "new-song" },
+                "new-song",
+                new SongDetails { songID = "new-song" }
+            )
+        );
+        Assert.Equal(
+            SongSelectionResolution.CachedSongIdMismatch,
+            SongSelectionGuard.GetResolution(
+                new SongDetails { songID = "new-song" },
+                "new-song",
+                CreateSong("different-song")
+            )
+        );
+        Assert.Equal(
+            SongSelectionResolution.Resolved,
+            SongSelectionGuard.GetResolution(
+                CreateSong("new-song"),
+                "new-song",
+                CreateSong("new-song")
+            )
+        );
+    }
+
     private static SongDetails CreateSong(string songID)
     {
         return new SongDetails

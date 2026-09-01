@@ -239,6 +239,7 @@ namespace RockSnifferLib.Sniffing
             new CatalogFileFailureTracker();
         private bool selectedSongDetected = false;
         private bool selectedSongResolved = false;
+        private string selectedSongResolution = SongSelectionResolution.NotDetected;
 
         /// <summary>
         /// Boolean to let async tasks finish
@@ -325,6 +326,7 @@ namespace RockSnifferLib.Sniffing
                         catalogFileFailureTracker.IsTruncated,
                     selectedSongDetected = selectedSongDetected,
                     selectedSongResolved = selectedSongResolved,
+                    selectedSongResolution = selectedSongResolution,
                 };
             }
         }
@@ -685,6 +687,11 @@ namespace RockSnifferLib.Sniffing
                     selectedSongResolved = SongSelectionGuard.MatchesSelectedSong(
                         currentCDLCDetails,
                         currentMemoryReadout.songID
+                    );
+                    selectedSongResolution = SongSelectionGuard.GetResolution(
+                        currentCDLCDetails,
+                        currentMemoryReadout.songID,
+                        _cache.Get(currentMemoryReadout.songID)
                     );
                 }
 
