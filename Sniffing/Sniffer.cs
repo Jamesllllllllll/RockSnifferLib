@@ -217,6 +217,7 @@ namespace RockSnifferLib.Sniffing
         /// The memory reader
         /// </summary>
         private readonly RSMemoryReader memReader;
+        private readonly RSHelpers.Multiplayer.ExperimentalMultiplayerReader? multiplayerReader;
 
         /// <summary>
         /// Settings this sniffer was instantiated with
@@ -285,6 +286,8 @@ namespace RockSnifferLib.Sniffing
 
             //Initialize memory reader
             memReader = new RSMemoryReader(_rsProcess, _edition);
+            if (settings.enableExperimentalMultiplayer)
+                multiplayerReader = new RSHelpers.Multiplayer.ExperimentalMultiplayerReader(_rsProcess);
 
             OnStateChanged += Sniffer_OnStateChanged;
 
@@ -423,9 +426,24 @@ namespace RockSnifferLib.Sniffing
                 {
                     //Read data from memory
                     newReadout = memReader.DoReadout();
+                    if (multiplayerReader != null)
+                    {
+                        newReadout.experimentalMultiplayer = multiplayerReader.Read((selected, ids) =>
+                            string.IsNullOrEmpty(selected) ? null : _cache.Get(selected));
+                        if (newReadout.experimentalMultiplayer.Supported &&
+                            newReadout.experimentalMultiplayer.State != "inactive")
+                        {
+                            // The experimental snapshot owns multiplayer timing/stats.
+                            // Keep invalid ordinary paths away from legacy completion logic.
+                            newReadout.songTimer = 0;
+                            newReadout.noteData = default(RSHelpers.NoteData.LearnASongNoteData);
+                            newReadout.mode = RSMode.MULTIPLAYER;
+                        }
+                    }
                 }
                 catch (Exception e)
                 {
+                    newReadout = null;
                     if (running)
                     {
                         Logger.LogError("Error while reading memory: {0} {1}\r\n{2}", e.GetType(), e.Message, e.StackTrace);
@@ -1136,6 +1154,7 @@ namespace RockSnifferLib.Sniffing
             if (!running) return;
 
             running = false;
+            multiplayerReader?.Dispose();
             sniffingCancellation.Cancel();
 
             lock (fileSystemWatcherSync)
@@ -1570,6 +1589,8 @@ namespace RockSnifferLib.Sniffing
         /// </summary>
         private void UpdateState()
         {
+            if (currentMemoryReadout.experimentalMultiplayer is { Supported: true } mp &&
+                mp.State != "inactive") return;
             // Super complex state machine of state transitions
             switch (currentState)
             {

@@ -110,6 +110,13 @@ RockList develops reusable RockSnifferLib changes in this public repository
 first, then syncs released revisions into RockList Desktop. The maintenance and
 upstream process is documented in [MAINTAINING.md](MAINTAINING.md).
 
+## Experimental multiplayer
+
+An opt-in multiplayer API is available for one validated executable build.
+It provides independent player statistics and calculated accuracy, shared
+timing, and retained final values. See the [API and limitations](RSHelpers/Multiplayer/README.md)
+before enabling it. Mastery is not implemented.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
