@@ -88,6 +88,7 @@ namespace RockSnifferLib.RSHelpers
         /// song-start, progress, completion, or playthrough-history behavior.
         /// </summary>
         public RSMultiplayerDiagnostics multiplayer = new RSMultiplayerDiagnostics();
+        public Multiplayer.MultiplayerSnapshot? experimentalMultiplayer;
 
         /// <summary>
         /// Prints out this readouts details (if Logger.logMemoryOutput is enabled)
@@ -123,6 +124,7 @@ namespace RockSnifferLib.RSHelpers
             copy.noteData = noteData;
 
             copy.multiplayer = multiplayer?.Clone() ?? new RSMultiplayerDiagnostics();
+            copy.experimentalMultiplayer = experimentalMultiplayer;
         }
 
         /// <summary>

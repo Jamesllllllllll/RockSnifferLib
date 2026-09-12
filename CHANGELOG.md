@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.9-rocklist.14] - 2026-09-11
+
+### Added
+
+- Opt-in experimental multiplayer snapshots on the validated Learn & Play build,
+  with shared playback timing, separate player counters, calculated accuracy and
+  retained results. Existing single-player events remain separate.
+- Read-only standalone reader, lifecycle regression tests and public API examples.
+
 ## [0.6.9-rocklist.13] - 2026-09-01
 
 ### Added
