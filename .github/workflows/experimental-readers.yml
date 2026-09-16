@@ -1,0 +1,41 @@
+name: Experimental reader checks
+
+on:
+  pull_request:
+    branches: [rock-buddy]
+  push:
+    branches: ['buddy/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: tnt-coders/RockSniffer
+          ref: 3707ae509083d3dafa2f3c9cb89df171e9f3eaf2
+          path: RockSniffer
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: RockSniffer/RockSnifferLib
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: tnt-coders/Rocksmith2014PsarcLib
+          ref: d79ff9880c56685cf98e3a95634fd37989d9bf9c
+          path: RockSniffer/Rocksmith2014PsarcLib
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build the existing RockBuddy executable against this library
+        working-directory: RockSniffer
+        run: dotnet build RockSniffer.sln --configuration Release -p:Platform=x64
+      - name: Test the library
+        working-directory: RockSniffer/RockSnifferLib
+        run: dotnet test RockSnifferLib.Tests/RockSnifferLib.Tests.csproj --configuration Release

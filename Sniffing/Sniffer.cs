@@ -1,4 +1,4 @@
-﻿using Rocksmith2014PsarcLib.Psarc;
+using Rocksmith2014PsarcLib.Psarc;
 using RockSnifferLib.Cache;
 using RockSnifferLib.Configuration;
 using RockSnifferLib.Events;
@@ -77,12 +77,13 @@ namespace RockSnifferLib.Sniffing
         /// Currently active memory readout
         /// </summary>
         private RSMemoryReadout currentMemoryReadout = new RSMemoryReadout();
+        private readonly object readoutSync = new object();
 
         /// <summary>
         /// Reference to the rocksmith process
         /// </summary>
         private readonly Process _rsProcess;
-        
+
         /// <summary>
         /// Which _edition of Rocksmith we are attached to
         /// </summary>
@@ -92,6 +93,7 @@ namespace RockSnifferLib.Sniffing
         /// Cache to use
         /// </summary>
         private readonly ICache _cache;
+        private readonly RSHelpers.Multiplayer.ExperimentalMultiplayerReader? multiplayerReader;
 
         /// <summary>
         /// The memory reader
@@ -136,6 +138,8 @@ namespace RockSnifferLib.Sniffing
             _settings = settings;
 
             //Initialize memory reader
+            if (settings.enableExperimentalMultiplayer)
+                multiplayerReader = new RSHelpers.Multiplayer.ExperimentalMultiplayerReader(_rsProcess, _edition);
             memReader = new RSMemoryReader(_rsProcess, _edition);
 
             OnStateChanged += Sniffer_OnStateChanged;
@@ -195,6 +199,8 @@ namespace RockSnifferLib.Sniffing
         /// <param name="e"></param>
         private void Sniffer_OnStateChanged(object sender, OnStateChangedArgs e)
         {
+            if (RSHelpers.Multiplayer.MultiplayerReadout.IsActive(currentMemoryReadout.experimentalMultiplayer))
+                return; // Experimental multiplayer never verifies/completes a legacy single-player score.
             var newState = e.newState;
             var oldState = e.oldState;
 
@@ -216,45 +222,55 @@ namespace RockSnifferLib.Sniffing
             {
                 await Task.Delay(100);
 
-                RSMemoryReadout newReadout = null;
+                lock (readoutSync)
+                {
+                    if (!running) return;
 
-                try
-                {
-                    //Read data from memory
-                    newReadout = memReader.DoReadout();
-                }
-                catch (Exception e)
-                {
-                    if (running)
+                    RSMemoryReadout newReadout = null;
+
+                    try
                     {
-                        Logger.LogError("Error while reading memory: {0} {1}\r\n{2}", e.GetType(), e.Message, e.StackTrace);
+                        //Read data from memory
+                        var multiplayer = multiplayerReader?.Read((selected, ids) =>
+                            string.IsNullOrEmpty(selected) ? null : _cache.Get(selected));
+                        newReadout = RSHelpers.Multiplayer.MultiplayerReadout.Read(multiplayer, memReader.DoReadout);
                     }
-                }
-
-                if (newReadout == null)
-                {
-                    continue;
-                }
-
-                if (newReadout.songID != currentMemoryReadout.songID || (currentCDLCDetails == null || !currentCDLCDetails.IsValid()))
-                {
-                    var newDetails = _cache.Get(newReadout.songID);
-
-                    if (newDetails != null && newDetails.IsValid())
+                    catch (Exception e)
                     {
-                        currentCDLCDetails = _cache.Get(newReadout.songID);
-                        OnSongChanged?.Invoke(this, new OnSongChangedArgs { songDetails = currentCDLCDetails });
-                        currentCDLCDetails.Print();
+                        newReadout = null;
+                        if (running)
+                        {
+                            Logger.LogError("Error while reading memory: {0} {1}\r\n{2}", e.GetType(), e.Message, e.StackTrace);
+                        }
                     }
 
+                    if (newReadout == null)
+                    {
+                        continue;
+                    }
+
+                    if (newReadout.songID != currentMemoryReadout.songID || (currentCDLCDetails == null || !currentCDLCDetails.IsValid()))
+                    {
+                        var newDetails = _cache.Get(newReadout.songID);
+
+                        if (newDetails != null && newDetails.IsValid())
+                        {
+                            currentCDLCDetails = _cache.Get(newReadout.songID);
+                            OnSongChanged?.Invoke(this, new OnSongChangedArgs { songDetails = currentCDLCDetails });
+                            currentCDLCDetails.Print();
+                        }
+
+                    }
+
+                    if (!running) return; // An event handler may have stopped this instance.
+
+                    newReadout.CopyTo(ref currentMemoryReadout);
+
+                    OnMemoryReadout?.Invoke(this, new OnMemoryReadoutArgs() { memoryReadout = currentMemoryReadout });
+
+                    //Print memreadout if debug is enabled
+                    currentMemoryReadout.Print();
                 }
-
-                newReadout.CopyTo(ref currentMemoryReadout);
-
-                OnMemoryReadout?.Invoke(this, new OnMemoryReadoutArgs() { memoryReadout = currentMemoryReadout });
-
-                //Print memreadout if debug is enabled
-                currentMemoryReadout.Print();
             }
         }
 
@@ -490,23 +506,28 @@ namespace RockSnifferLib.Sniffing
         /// </summary>
         public void Stop()
         {
-            running = false;
-
-            // Reset memory redout and song details
-            currentMemoryReadout = new RSMemoryReadout();
-            currentCDLCDetails = new SongDetails();
-            
-            OnMemoryReadout?.Invoke(this, new OnMemoryReadoutArgs() { memoryReadout = currentMemoryReadout });
-            OnSongChanged?.Invoke(this, new OnSongChangedArgs() { songDetails = currentCDLCDetails });
-
-            UpdateState();
-
-            foreach (var watcher in fileSystemWatchers)
+            lock (readoutSync)
             {
-                watcher.Dispose();
-            }
+                if (!running) return;
+                running = false;
+                multiplayerReader?.Dispose();
 
-            fileSystemWatchers.Clear();
+                // Reset memory redout and song details
+                currentMemoryReadout = new RSMemoryReadout();
+                currentCDLCDetails = new SongDetails();
+
+                OnMemoryReadout?.Invoke(this, new OnMemoryReadoutArgs() { memoryReadout = currentMemoryReadout });
+                OnSongChanged?.Invoke(this, new OnSongChangedArgs() { songDetails = currentCDLCDetails });
+
+                UpdateState();
+
+                foreach (var watcher in fileSystemWatchers)
+                {
+                    watcher.Dispose();
+                }
+
+                fileSystemWatchers.Clear();
+            }
         }
 
         /// <summary>
@@ -514,74 +535,87 @@ namespace RockSnifferLib.Sniffing
         /// </summary>
         private void UpdateState()
         {
-            //Super complex state machine of state transitions
-            switch (currentState)
+            lock (readoutSync)
             {
-                case SnifferState.IN_MENUS:
-                    if (currentMemoryReadout.songTimer != 0)
-                    {
-                        currentState = SnifferState.SONG_SELECTED;
-                    }
-                    break;
-                case SnifferState.SONG_SELECTED:
-                    if (currentMemoryReadout.songTimer == 0)
-                    {
-                        currentState = SnifferState.SONG_STARTING;
-                    }
-
-                    //If we somehow missed some states, skip to SONG_PLAYING
-                    //Or if the user reset
-                    if (currentMemoryReadout.songTimer > 1)
-                    {
-                        currentState = SnifferState.SONG_PLAYING;
-                    }
-                    break;
-                case SnifferState.SONG_STARTING:
-                    if (currentMemoryReadout.songTimer > 0)
-                    {
-                        currentState = SnifferState.SONG_PLAYING;
-                    }
-                    break;
-                case SnifferState.SONG_PLAYING:
-                    //Allow 5 seconds of error margin on song ending
-                    if (currentMemoryReadout.songTimer >= currentCDLCDetails.songLength - 5)
-                    {
-                        currentState = SnifferState.SONG_ENDING;
-                    }
-                    //If the timer goes to 0, the user must have quit
-                    if (currentMemoryReadout.songTimer == 0)
-                    {
-                        currentState = SnifferState.IN_MENUS;
-                    }
-                    break;
-                case SnifferState.SONG_ENDING:
-                    if (currentMemoryReadout.songTimer == 0)
-                    {
-                        currentState = SnifferState.IN_MENUS;
-                    }
-                    break;
-                default:
-                    break;
-            }
-
-            //Force state to IN_MENUS if the current song details are not valid
-            if (!currentCDLCDetails.IsValid())
-            {
-                currentState = SnifferState.IN_MENUS;
-            }
-
-            //If state changed
-            if (currentState != previousState)
-            {
-                //Invoke event
-                OnStateChanged?.Invoke(this, new OnStateChangedArgs() { oldState = previousState, newState = currentState });
-
-                //Remember previous state
-                previousState = currentState;
-
-                if (Logger.logStateMachine)
+                if (RSHelpers.Multiplayer.MultiplayerReadout.IsActive(currentMemoryReadout.experimentalMultiplayer))
                 {
-                    Logger.Log("Current state: {0}", currentState.ToString());
+                    // Reset the legacy lifecycle while publishing its normal menu transition.
+                    // Sniffer_OnStateChanged suppresses score events for this snapshot.
+                    currentState = SnifferState.IN_MENUS;
+                }
+                else
+                {
+                    //Super complex state machine of state transitions
+                    switch (currentState)
+                    {
+                        case SnifferState.IN_MENUS:
+                            if (currentMemoryReadout.songTimer != 0)
+                            {
+                                currentState = SnifferState.SONG_SELECTED;
+                            }
+                            break;
+                        case SnifferState.SONG_SELECTED:
+                            if (currentMemoryReadout.songTimer == 0)
+                            {
+                                currentState = SnifferState.SONG_STARTING;
+                            }
+
+                            //If we somehow missed some states, skip to SONG_PLAYING
+                            //Or if the user reset
+                            if (currentMemoryReadout.songTimer > 1)
+                            {
+                                currentState = SnifferState.SONG_PLAYING;
+                            }
+                            break;
+                        case SnifferState.SONG_STARTING:
+                            if (currentMemoryReadout.songTimer > 0)
+                            {
+                                currentState = SnifferState.SONG_PLAYING;
+                            }
+                            break;
+                        case SnifferState.SONG_PLAYING:
+                            //Allow 5 seconds of error margin on song ending
+                            if (currentMemoryReadout.songTimer >= currentCDLCDetails.songLength - 5)
+                            {
+                                currentState = SnifferState.SONG_ENDING;
+                            }
+                            //If the timer goes to 0, the user must have quit
+                            if (currentMemoryReadout.songTimer == 0)
+                            {
+                                currentState = SnifferState.IN_MENUS;
+                            }
+                            break;
+                        case SnifferState.SONG_ENDING:
+                            if (currentMemoryReadout.songTimer == 0)
+                            {
+                                currentState = SnifferState.IN_MENUS;
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+
+                }
+
+                //Force state to IN_MENUS if the current song details are not valid
+                if (!currentCDLCDetails.IsValid())
+                {
+                    currentState = SnifferState.IN_MENUS;
+                }
+
+                //If state changed
+                if (currentState != previousState)
+                {
+                    //Invoke event
+                    OnStateChanged?.Invoke(this, new OnStateChangedArgs() { oldState = previousState, newState = currentState });
+
+                    //Remember previous state
+                    previousState = currentState;
+
+                    if (Logger.logStateMachine)
+                    {
+                        Logger.Log("Current state: {0}", currentState.ToString());
+                    }
                 }
             }
         }

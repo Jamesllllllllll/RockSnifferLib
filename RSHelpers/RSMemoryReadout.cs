@@ -7,6 +7,8 @@ namespace RockSnifferLib.RSHelpers
     [Serializable]
     public class RSMemoryReadout
     {
+        /// <summary>Opt-in independent multiplayer data; legacy numeric modes are unchanged.</summary>
+        public Multiplayer.MultiplayerSnapshot? experimentalMultiplayer;
         public float songTimer = 0;
 
         public string songID = "";
@@ -33,6 +35,7 @@ namespace RockSnifferLib.RSHelpers
         /// <param name="copy">target readout</param>
         internal void CopyTo(ref RSMemoryReadout copy)
         {
+            copy.experimentalMultiplayer = experimentalMultiplayer;
             copy.songTimer = songTimer;
 
             copy.songID = songID;
