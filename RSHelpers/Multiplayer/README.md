@@ -1,10 +1,16 @@
 # Experimental multiplayer API
 
-Only the executable with SHA-256
-`BB056959C0C6371D4ECF78F84C5D27E2FAE93A9D0258830C2A36F33E6A2778EB`
-is supported. This is the library's `Remastered_Learn_And_Play` edition;
-product branding alone does not identify offsets. Other executables return
-`Supported = false`. No guessed offset shifts are applied.
+Both `RSEdition.Remastered` and `RSEdition.Remastered_Learn_And_Play` are
+available for experimental use. Sniffer passes the same edition used by its
+single-player reader, without an additional executable-hash check.
+Standalone callers must identify the edition and pass it explicitly.
+
+Starting addresses follow the existing single-player edition mapping:
+Remastered uses addresses `0x1000` below Learn & Play with unchanged subsequent
+pointer steps. Learn & Play has live validation; Remastered has synthetic
+coverage and is available for community testing. Other edition values return
+`Supported = false` without memory reads. `Supported` indicates that a layout
+is available, not that the particular executable has passed live testing.
 
 ## Standalone read-only use
 
@@ -12,7 +18,7 @@ product branding alone does not identify offsets. Other executables return
 using RockSnifferLib.RSHelpers.Multiplayer;
 
 // Select the live Rocksmith process with its main window, not a leftover child.
-using var reader = new ExperimentalMultiplayerReader(rocksmithProcess);
+using var reader = new ExperimentalMultiplayerReader(rocksmithProcess, edition);
 var snapshot = reader.Read((selectedSongId, arrangementIds) =>
     ResolveFromYourCatalog(selectedSongId, arrangementIds));
 if (snapshot.Player2?.Accuracy is double accuracy)
@@ -89,13 +95,13 @@ start timestamp is fabricated.
 
 ## Evidence and limits
 
-Timer/GUID walks survived two complete game restarts with reciprocal ownership,
+On Learn & Play, timer/GUID walks survived two complete game restarts with reciprocal ownership,
 swapped arrangements, identical arrangements, a second song, pause-tuner,
 same-song restart, early exit, natural endings and return to single-player.
 Alternate/bonus arrangements and other untested submenus remain experimental.
-Two sanitized accuracy recordings are included in the test project: relative
-sample times, stage/pause, timers and counters only, with synthetic addresses
-and GUIDs. They contain no song metadata, personal paths or process dumps.
+Tests use compact synthetic samples for accuracy, result retention, and both
+edition layouts. They contain no live recordings, song metadata, personal paths
+or process dumps.
 
 The counter-marker/field layout builds on RockSnifferLib's existing Learn-a-Song
 reader. New multiplayer walks were established through read-only Windows tests

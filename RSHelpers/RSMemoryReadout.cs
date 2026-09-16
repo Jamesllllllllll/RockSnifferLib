@@ -89,6 +89,8 @@ namespace RockSnifferLib.RSHelpers
         /// </summary>
         public RSMultiplayerDiagnostics multiplayer = new RSMultiplayerDiagnostics();
         public Multiplayer.MultiplayerSnapshot? experimentalMultiplayer;
+        /// <summary>Opt-in initial profile login observation, not multiplayer slot identity.</summary>
+        public Profiles.ProfileSnapshot? experimentalProfiles;
 
         /// <summary>
         /// Prints out this readouts details (if Logger.logMemoryOutput is enabled)
@@ -125,6 +127,7 @@ namespace RockSnifferLib.RSHelpers
 
             copy.multiplayer = multiplayer?.Clone() ?? new RSMultiplayerDiagnostics();
             copy.experimentalMultiplayer = experimentalMultiplayer;
+            copy.experimentalProfiles = experimentalProfiles;
         }
 
         /// <summary>

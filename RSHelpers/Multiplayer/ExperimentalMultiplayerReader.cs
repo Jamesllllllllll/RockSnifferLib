@@ -1,46 +1,49 @@
-using Microsoft.Win32.SafeHandles;
 using RockSnifferLib.Sniffing;
+using RockSnifferLib.SysHelpers;
 using System;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace RockSnifferLib.RSHelpers.Multiplayer;
 
 /// <summary>
-/// Opt-in, read-only reader for the explicitly validated executable. Owns a
+/// Opt-in, read-only reader using the edition supplied by the host. Owns a
 /// VM_READ/QUERY_LIMITED_INFORMATION handle, never enumerates or writes memory.
 /// Poll about every 100-200ms; snapshots may be displayed at a slower cadence.
 /// </summary>
 public sealed class ExperimentalMultiplayerReader : IDisposable
 {
-    public const string SupportedSha256 = "BB056959C0C6371D4ECF78F84C5D27E2FAE93A9D0258830C2A36F33E6A2778EB";
     private readonly object sync = new();
     private readonly IReadMemory? memory;
     private readonly uint module;
+    private readonly ExperimentalMemoryOffsets offsets;
     private readonly MultiplayerTracker tracker = new();
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private string? selectedSongId;
     private bool disposed;
+    /// <summary>An edition layout is available; this does not certify live-game validation.</summary>
     public bool Supported { get; }
 
-    public ExperimentalMultiplayerReader(Process process)
+    public ExperimentalMultiplayerReader(Process process, RSEdition edition)
     {
+        ArgumentNullException.ThrowIfNull(process);
+        if (!ExperimentalMemoryOffsets.TryCreate(edition, out offsets)) return;
         if (!OperatingSystem.IsWindows()) return;
         var image = process.MainModule;
-        if (image?.FileName == null) return;
-        using var file = File.OpenRead(image.FileName);
-        if (Convert.ToHexString(SHA256.HashData(file)) != SupportedSha256) return;
+        if (image == null) return;
         module = checked((uint)image.BaseAddress.ToInt64());
         memory = new ProcessReadMemory(process.Id);
         Supported = true;
     }
 
-    internal ExperimentalMultiplayerReader(IReadMemory memory, uint module)
-    { this.memory = memory; this.module = module; Supported = true; }
+    internal ExperimentalMultiplayerReader(IReadMemory memory, uint module,
+        RSEdition edition = RSEdition.Remastered_Learn_And_Play)
+    {
+        this.memory = memory;
+        this.module = module;
+        Supported = ExperimentalMemoryOffsets.TryCreate(edition, out offsets);
+    }
 
     /// <param name="resolveSong">Optional catalog resolver. It receives the last
     /// preview song ID and current arrangement IDs; return null if ambiguous.
@@ -52,14 +55,14 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             if (!Supported) return new MultiplayerSnapshot();
-            var preview = Text(Walk(0xF60514, 0xBC, 0), 128);
+            var preview = Text(Walk(offsets.SongId, 0xBC, 0), 128);
             if (preview != null && preview.StartsWith("Play_", StringComparison.Ordinal)
                 && (preview.EndsWith("_Preview", StringComparison.Ordinal) || preview.EndsWith("_Invalid", StringComparison.Ordinal)))
                 selectedSongId = preview.Substring(5, preview.Length - 13);
-            var p1 = Player(1, Walk(0xF6062C, 0xB0, 0x30, 0x18, 4, 0x84, 0),
-                Walk(0xF60588, 0x134, 0x88, 0x28, 0, 0x24, 0));
-            var p2 = Player(2, Walk(0xF6062C, 0xB0, 0x34, 0x18, 4, 0x74, 0),
-                Walk(0xF60588, 0x134, 0x88, 0x28, 4, 0x24, 0));
+            var p1 = Player(1, Walk(offsets.GameRoot, 0xB0, 0x30, 0x18, 4, 0x84, 0),
+                Walk(offsets.AlternatePlayerRoot, 0x134, 0x88, 0x28, 0, 0x24, 0));
+            var p2 = Player(2, Walk(offsets.GameRoot, 0xB0, 0x34, 0x18, 4, 0x74, 0),
+                Walk(offsets.AlternatePlayerRoot, 0x134, 0x88, 0x28, 4, 0x24, 0));
             SongDetails? song = null;
             if (p1 != null && p2 != null && p1.Address != p2.Address)
             {
@@ -69,11 +72,11 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
                     string.Equals(a.arrangementID, id, StringComparison.OrdinalIgnoreCase)))) song = null;
             }
             p1 = Enrich(p1, song); p2 = Enrich(p2, song);
-            var pause = Bytes(module + 0xF605FC, 1);
+            var pause = Bytes(module + offsets.Pause, 1);
             return tracker.Update(new MultiplayerFrame(clock.Elapsed.TotalSeconds,
-                Text(module + 0xF607C9, 64), pause == null ? null : pause[0],
-                Float(Walk(0xF6062C, 0xB0, 0x30, 0x538, 8)),
-                Float(Walk(0xF6062C, 0xB0, 0x34, 0x538, 8)), p1, p2,
+                Text(module + offsets.Stage, 64), pause == null ? null : pause[0],
+                Float(Walk(offsets.GameRoot, 0xB0, 0x30, 0x538, 8)),
+                Float(Walk(offsets.GameRoot, 0xB0, 0x34, 0x538, 8)), p1, p2,
                 song?.songID, song != null && float.IsFinite(song.songLength) && song.songLength > 0 ? song.songLength : null));
         }
     }
@@ -141,27 +144,4 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
     {
         lock (sync) { if (disposed) return; disposed = true; memory?.Dispose(); }
     }
-}
-
-internal interface IReadMemory : IDisposable { byte[]? Read(uint address, int size); }
-internal sealed class ProcessReadMemory : IReadMemory
-{
-    private readonly SafeProcessHandle handle;
-    internal ProcessReadMemory(int pid)
-    {
-        handle = OpenProcess(0x1010, false, pid);
-        if (handle.IsInvalid) { handle.Dispose(); throw new System.ComponentModel.Win32Exception(); }
-    }
-    public byte[]? Read(uint address, int size)
-    {
-        var bytes = new byte[size];
-        return ReadProcessMemory(handle, new IntPtr((long)address), bytes, (UIntPtr)size, out var count)
-            && count.ToUInt64() == (ulong)size ? bytes : null;
-    }
-    public void Dispose() => handle.Dispose();
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern SafeProcessHandle OpenProcess(uint access, bool inherit, int pid);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool ReadProcessMemory(SafeProcessHandle process, IntPtr address,
-        byte[] buffer, UIntPtr size, out UIntPtr bytesRead);
 }
