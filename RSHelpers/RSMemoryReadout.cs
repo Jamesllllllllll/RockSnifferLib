@@ -15,6 +15,8 @@ namespace RockSnifferLib.RSHelpers
 
         public RSMode mode = RSMode.UNKNOWN;
         public INoteData noteData;
+        /// <summary>Opt-in initial login observation, not multiplayer player-slot identity.</summary>
+        public Profiles.ProfileSnapshot? experimentalProfiles;
 
         /// <summary>
         /// Prints out this readouts details (if Logger.logMemoryOutput is enabled)
@@ -42,6 +44,7 @@ namespace RockSnifferLib.RSHelpers
             copy.mode = mode;
 
             copy.noteData = noteData;
+            copy.experimentalProfiles = experimentalProfiles;
         }
 
         /// <summary>
