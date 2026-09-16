@@ -218,6 +218,7 @@ namespace RockSnifferLib.Sniffing
         /// </summary>
         private readonly RSMemoryReader memReader;
         private readonly RSHelpers.Multiplayer.ExperimentalMultiplayerReader? multiplayerReader;
+        private readonly RSHelpers.Profiles.ExperimentalProfileReader? profileReader;
 
         /// <summary>
         /// Settings this sniffer was instantiated with
@@ -287,7 +288,10 @@ namespace RockSnifferLib.Sniffing
             //Initialize memory reader
             memReader = new RSMemoryReader(_rsProcess, _edition);
             if (settings.enableExperimentalMultiplayer)
-                multiplayerReader = new RSHelpers.Multiplayer.ExperimentalMultiplayerReader(_rsProcess);
+                multiplayerReader = new RSHelpers.Multiplayer.ExperimentalMultiplayerReader(_rsProcess, _edition);
+            if (settings.enableExperimentalProfiles)
+                profileReader = new RSHelpers.Profiles.ExperimentalProfileReader(_rsProcess, _edition,
+                    settings.experimentalProfileCatalog);
 
             OnStateChanged += Sniffer_OnStateChanged;
 
@@ -424,8 +428,11 @@ namespace RockSnifferLib.Sniffing
 
                 try
                 {
+                    // Track startup even if legacy song pointers are not ready yet.
+                    var profile = profileReader?.Read();
                     //Read data from memory
                     newReadout = memReader.DoReadout();
+                    newReadout.experimentalProfiles = profile;
                     if (multiplayerReader != null)
                     {
                         newReadout.experimentalMultiplayer = multiplayerReader.Read((selected, ids) =>
@@ -1155,6 +1162,7 @@ namespace RockSnifferLib.Sniffing
 
             running = false;
             multiplayerReader?.Dispose();
+            profileReader?.Dispose();
             sniffingCancellation.Cancel();
 
             lock (fileSystemWatcherSync)

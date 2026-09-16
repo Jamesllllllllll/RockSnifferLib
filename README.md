@@ -112,10 +112,19 @@ upstream process is documented in [MAINTAINING.md](MAINTAINING.md).
 
 ## Experimental multiplayer
 
-An opt-in multiplayer API is available for one validated executable build.
+An opt-in multiplayer API is available for Remastered and Learn & Play.
 It provides independent player statistics and calculated accuracy, shared
 timing, and retained final values. See the [API and limitations](RSHelpers/Multiplayer/README.md)
-before enabling it. Mastery is not implemented.
+before enabling it. Learn & Play has live validation; Remastered is available
+for experimental testing with edition-adjusted addresses. Mastery is not implemented.
+
+## Experimental profile observation
+
+An opt-in read-only API can observe the highlighted profile at startup and
+retain its identity after an observed login on Remastered or Learn & Play. It
+requires observation before login and a host-supplied saved-profile catalog.
+Late attachment reports unknown; multiplayer profile ownership is not inferred.
+See the [API and limitations](RSHelpers/Profiles/README.md).
 
 ## License
 

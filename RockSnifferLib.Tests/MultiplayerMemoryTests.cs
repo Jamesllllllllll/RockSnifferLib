@@ -1,5 +1,7 @@
 using System.Text;
+using RockSnifferLib.RSHelpers;
 using RockSnifferLib.RSHelpers.Multiplayer;
+using RockSnifferLib.SysHelpers;
 using RockSnifferLib.Sniffing;
 using Xunit;
 
@@ -14,10 +16,12 @@ public class MultiplayerMemoryTests
         public Dictionary<uint, byte> Data = new();
         private uint allocation = 0x2000000;
         public bool Disposed;
+        public int Reads;
         public void Put(uint address, byte[] bytes)
         { for (int i = 0; i < bytes.Length; i++) Data[address + (uint)i] = bytes[i]; }
         public byte[]? Read(uint address, int size)
         {
+            Reads++;
             Assert.InRange(size, 1, 128);
             return Enumerable.Range(0, size).All(i => Data.ContainsKey(address + (uint)i))
                 ? Enumerable.Range(0, size).Select(i => Data[address + (uint)i]).ToArray() : null;
@@ -49,6 +53,9 @@ public class MultiplayerMemoryTests
         m.Put(Module + 0xF605FC, new byte[] { 2 });
         var stage = new byte[64]; Encoding.ASCII.GetBytes("panel_bib").CopyTo(stage, 0);
         m.Put(Module + 0xF607C9, stage);
+        m.Chain(0xF60514, 0x3400000, 0xBC, 0);
+        var preview = new byte[128]; Encoding.ASCII.GetBytes("Play_synthetic_Preview").CopyTo(preview, 0);
+        m.Put(0x3400000, preview);
         foreach (var address in new[] { P1, P2 })
         {
             var data = new byte[0x48]; BitConverter.GetBytes(111000).CopyTo(data, 8);
@@ -59,21 +66,61 @@ public class MultiplayerMemoryTests
         }
         return m;
     }
-    [Fact] public void ReadsRealWalkLayoutAndChecksCatalogMembership()
+    [Theory]
+    [InlineData(RSEdition.Remastered_Learn_And_Play, 0u)]
+    [InlineData(RSEdition.Remastered, 0x1000u)]
+    public void ReadsBothEditionLayoutsAndChecksCatalogMembership(RSEdition edition, uint relocation)
     {
         var m = Ready();
-        using var reader = new ExperimentalMultiplayerReader(m, Module);
-        var snapshot = reader.Read((selected, ids) => new SongDetails {
-            songID = "synthetic", songLength = 240,
-            arrangements = new() { new ArrangementDetails { arrangementID = Arrangement, type = "Lead" } }
+        // Relocate only module data; heap objects and pointer-chain steps stay put.
+        foreach (var pair in m.Data.Where(p => p.Key >= Module && p.Key < Module + 0x1000000).ToArray())
+        {
+            m.Data.Remove(pair.Key);
+            m.Data[pair.Key - relocation] = pair.Value;
+        }
+        m.Put(P1 + 0x30, BitConverter.GetBytes(80));
+        m.Put(P1 + 0x40, BitConverter.GetBytes(20));
+        using var reader = new ExperimentalMultiplayerReader(m, Module, edition);
+        var snapshot = reader.Read((selected, ids) => {
+            Assert.Equal("synthetic", selected);
+            return new SongDetails {
+                songID = "synthetic", songLength = 240,
+                arrangements = new() { new ArrangementDetails { arrangementID = Arrangement, type = "Lead" } }
+            };
         });
+        Assert.True(snapshot.Supported);
         Assert.Equal("paused", snapshot.State);
+        Assert.Equal("panel_bib", snapshot.Stage);
+        Assert.Equal(4, snapshot.ElapsedSeconds);
+        Assert.Equal(80, snapshot.Player1!.Accuracy);
         Assert.Equal(75, snapshot.Player2!.Accuracy);
         Assert.Equal("Lead", snapshot.Player1!.Path);
         Assert.Equal("synthetic", snapshot.SongId);
         Assert.Equal(240, snapshot.DurationSeconds);
         var mismatch = reader.Read((_, _) => new SongDetails { songID = "wrong", songLength = 999 });
         Assert.Null(mismatch.SongId); Assert.Null(mismatch.DurationSeconds);
+    }
+    [Theory]
+    [InlineData(RSEdition.Remastered_Just_In_Case_We_Need_It_Beta)]
+    [InlineData((RSEdition)999)]
+    public void UnmappedEditionDoesNotReadMemory(RSEdition edition)
+    {
+        var m = Ready();
+        int reads = m.Reads;
+        using var reader = new ExperimentalMultiplayerReader(m, Module, edition);
+        Assert.False(reader.Supported);
+        Assert.Equal(new MultiplayerSnapshot(), reader.Read());
+        Assert.Equal(reads, m.Reads);
+    }
+    [Fact]
+    public void DifferentEditionDoesNotFallBackToLearnAndPlayAddresses()
+    {
+        using var reader = new ExperimentalMultiplayerReader(Ready(), Module, RSEdition.Remastered);
+        var snapshot = reader.Read();
+        Assert.True(snapshot.Supported);
+        Assert.Null(snapshot.RunId);
+        Assert.Null(snapshot.Player1);
+        Assert.Null(snapshot.Player2);
     }
     [Fact] public void FailedMemoryAndBadMarkerNeverBecomeZeroStats()
     {

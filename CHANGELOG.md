@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.9-rocklist.15] - 2026-09-16
+
+### Added
+- Optional experimental profile observation for applications that start watching
+  before Rocksmith login, with separate highlighted and observed login identities.
+- A standalone read-only profile reader and optional Sniffer snapshots, with
+  unknown results when identity cannot be established reliably.
+
+### Improved
+
+- Experimental multiplayer and profile observation are available for both
+  Remastered and Learn & Play. Remastered is available for community testing;
+  live validation has been performed on Learn & Play.
+
 ## [0.6.9-rocklist.14] - 2026-09-11
 
 ### Added

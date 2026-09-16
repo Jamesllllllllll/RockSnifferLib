@@ -14,11 +14,11 @@ public class MultiplayerTrackerTests
 
     [Fact] public void ObservedAccuracyAndStreakAreIndependent()
     {
-        var acoustic = new PlayerSnapshot(2, "test", 147, 49, 9, 48, 0);
-        var electric = new PlayerSnapshot(1, "test", 865, 379, 2, 66, 0);
-        Assert.Equal(75, acoustic.Accuracy);
-        Assert.Equal(69.533762, electric.Accuracy!.Value, 6);
-        Assert.Equal(66, electric.HighestHitStreak);
+        var player2 = new PlayerSnapshot(2, "test", 147, 49, 9, 48, 0);
+        var player1 = new PlayerSnapshot(1, "test", 865, 379, 2, 66, 0);
+        Assert.Equal(75, player2.Accuracy);
+        Assert.Equal(69.533762, player1.Accuracy!.Value, 6);
+        Assert.Equal(66, player1.HighestHitStreak);
         Assert.Null(new PlayerSnapshot(1, "test", 0, 0, 0, 0, 0).Accuracy);
         Assert.Equal(0, new PlayerSnapshot(1, "test", 0, 10, 0, 0, 10).Accuracy);
     }
