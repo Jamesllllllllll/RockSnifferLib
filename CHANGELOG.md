@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.9-rocklist.17] - 2026-11-03
+
+### Fixed
+
+- Remastered multiplayer accepts validated primary player records when secondary paths are unavailable, while retaining counter, identity, alias, timer, and conflicting-read guards. Learn & Play validation is unchanged.
+
+### Tests
+
+- Added private typed-memory capture replay through the real reader and state tracker, plus regressions for Remastered validation and rejection of unsafe reads.
+
 ## [0.6.9-rocklist.16] - 2026-11-02
 
 ### Fixed
