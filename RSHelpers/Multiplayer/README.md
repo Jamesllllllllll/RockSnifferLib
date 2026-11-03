@@ -7,8 +7,14 @@ Standalone callers must identify the edition and pass it explicitly.
 
 Starting addresses follow the existing single-player edition mapping:
 Remastered uses addresses `0x1000` below Learn & Play with unchanged subsequent
-pointer steps. Learn & Play has live validation; Remastered has synthetic
-coverage and is available for community testing. Other edition values return
+pointer steps. Learn & Play has live validation. A private Remastered capture
+across three game processes confirmed independent primary player counters and
+matching timers while the secondary player paths were unavailable. Remastered
+therefore accepts repeatable, validated primary records without an unavailable
+secondary path; a readable conflicting secondary record is still rejected.
+Learn & Play continues to require matching primary and secondary paths.
+The capture does not certify catalog resolution, overlay output, identical
+arrangements, or all game builds; Remastered remains experimental. Other edition values return
 `Supported = false` without memory reads. `Supported` indicates that a layout
 is available, not that the particular executable has passed live testing.
 
@@ -51,9 +57,12 @@ sniffer.OnMemoryReadout += (_, args) => {
 };
 ```
 
-Sniffer uses its cache and the observed preview ID for metadata lookup. If it
-attached after the preview disappeared, metadata may remain unavailable until
-the next selection. The standalone callback supports host-specific GUID lookup.
+Sniffer first validates a preview-based cache match against both arrangement
+GUIDs. With `MemoryCache`, an indexed lookup can also resolve the unique song
+containing both arrangements when the preview is missing or stale. Ambiguous or
+incomplete matches supply no inferred song identity or duration. Other cache
+implementations can opt into `IArrangementSongCache`; standalone callbacks remain
+available for host-specific lookup.
 The feature defaults off and does not redefine legacy single-player fields or
 emit multiplayer completion through legacy events. When enabled, ordinary
 timer/note fields are cleared during an experimental multiplayer run so their
@@ -106,3 +115,21 @@ or process dumps.
 The counter-marker/field layout builds on RockSnifferLib's existing Learn-a-Song
 reader. New multiplayer walks were established through read-only Windows tests
 and restart validation; debugging/write tracing was not used.
+
+## Optional private capture replay
+
+`MultiplayerPrivateReplayTests` reconstructs bounded memory reads from the typed
+walks, counter records and timers in a collector results ZIP, then executes the
+real reader and state tracker using the recorded relative timestamps. Identity
+aliases are mapped to synthetic GUIDs consistently within the capture. This
+verifies slot ownership and lifecycle handling but cannot verify original GUIDs,
+catalog membership or live Windows memory access. No capture is stored here.
+
+Set `ROCKSNIFFER_PRIVATE_REPLAY_ZIP` to a private capture path when running
+`dotnet test`. Optional `ROCKSNIFFER_PRIVATE_REPLAY_OUTPUT` writes a local summary
+and timeline. Without a supplied capture the replay is explicitly skipped.
+The replay also runs both interpretations of omitted, unrecognized stage text:
+unreadable memory and readable text classified outside gameplay. This exposes
+stage-dependent uncertainty instead of silently assuming a missing value proves
+an in-game state. In particular, mixer continuity still needs a live check.
+Keep capture files and generated outputs outside the public source tree.
