@@ -37,7 +37,7 @@ public sealed class MultiplayerPrivateReplayTests
         && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static int? Integer(JsonElement node, string property) => node.TryGetProperty(property, out var value)
         && value.TryGetInt32Safe(out var number) ? number : null;
-    private static void Load(Memory memory, JsonElement frame)
+    private static void Load(Memory memory, JsonElement frame, bool opaqueStageIsReadable)
     {
         memory.Data.Clear();
         var walks = frame.GetProperty("Walks").EnumerateArray().ToArray();
@@ -72,7 +72,10 @@ public sealed class MultiplayerPrivateReplayTests
         if (Integer(frame, "Pause") is int value)
             memory.Put(Address(pause.GetProperty("Address")), new[] { (byte)value });
         var stage = walks.Single(w => Text(w, "Id") == "stage");
-        if (Text(frame, "Stage") is string stageText)
+        var stageText = Text(frame, "Stage");
+        if (stageText == null && opaqueStageIsReadable && Text(frame, "StageStatus") == "unrecognized_text")
+            stageText = "opaque_stage";
+        if (stageText != null)
         {
             var bytes = new byte[64]; Encoding.ASCII.GetBytes(stageText).CopyTo(bytes, 0);
             memory.Put(Address(stage.GetProperty("Address")), bytes);
@@ -86,7 +89,10 @@ public sealed class MultiplayerPrivateReplayTests
         }
     }
 
-    [PrivateReplayFact] public void ReplayPrivateCaptureThroughMemoryReaderAndTracker()
+    [PrivateReplayTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReplayPrivateCaptureThroughMemoryReaderAndTracker(bool opaqueStageIsReadable)
     {
         var input = Environment.GetEnvironmentVariable("ROCKSNIFFER_PRIVATE_REPLAY_ZIP");
         if (string.IsNullOrEmpty(input)) return;
@@ -132,7 +138,7 @@ public sealed class MultiplayerPrivateReplayTests
                     reader = new ExperimentalMultiplayerReader(memory, modules[nextSession], RSEdition.Remastered, () => now);
                 }
                 now = row.GetProperty("ms").GetDouble() / 1000;
-                Load(memory, row.GetProperty("frame"));
+                Load(memory, row.GetProperty("frame"), opaqueStageIsReadable);
                 var snapshot = reader!.Read();
                 Assert.Null(snapshot.SongId); Assert.Null(snapshot.DurationSeconds);
                 Assert.NotEqual("completed", snapshot.LastResult?.Outcome); // No catalog/duration evidence in this ZIP.
@@ -198,6 +204,7 @@ public sealed class MultiplayerPrivateReplayTests
             Assert.Null(outputs.Last(row => row.Phase == "single-exit").Snapshot.Player1);
         }
         var result = new {
+            stageInterpretation = opaqueStageIsReadable ? "opaque readable text (outside gameplay)" : "unreadable text (unknown stage)",
             samples = outputs.Count,
             sessions = outputs.Select(row => row.Session).Distinct().Count(),
             states = outputs.GroupBy(row => row.Snapshot.State).ToDictionary(g => g.Key, g => g.Count()),
@@ -210,6 +217,7 @@ public sealed class MultiplayerPrivateReplayTests
         var output = Environment.GetEnvironmentVariable("ROCKSNIFFER_PRIVATE_REPLAY_OUTPUT");
         if (!string.IsNullOrEmpty(output))
         {
+            output = Path.Combine(output, opaqueStageIsReadable ? "opaque-stage" : "unavailable-stage");
             Directory.CreateDirectory(output);
             File.WriteAllText(Path.Combine(output, "summary.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
             File.WriteAllLines(Path.Combine(output, "timeline.jsonl"), timeline.Select(row => JsonSerializer.Serialize(row)));
@@ -226,9 +234,9 @@ internal static class ReplayJsonExtensions
     }
 }
 
-public sealed class PrivateReplayFactAttribute : FactAttribute
+public sealed class PrivateReplayTheoryAttribute : TheoryAttribute
 {
-    public PrivateReplayFactAttribute()
+    public PrivateReplayTheoryAttribute()
     {
         if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ROCKSNIFFER_PRIVATE_REPLAY_ZIP")))
             Skip = "Requires an explicitly supplied private capture; no capture is distributed with source.";

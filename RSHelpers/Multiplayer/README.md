@@ -125,4 +125,8 @@ catalog membership or live Windows memory access. No capture is stored here.
 Set `ROCKSNIFFER_PRIVATE_REPLAY_ZIP` to a private capture path when running
 `dotnet test`. Optional `ROCKSNIFFER_PRIVATE_REPLAY_OUTPUT` writes a local summary
 and timeline. Without a supplied capture the replay is explicitly skipped.
+The replay also runs both interpretations of omitted, unrecognized stage text:
+unreadable memory and readable text classified outside gameplay. This exposes
+stage-dependent uncertainty instead of silently assuming a missing value proves
+an in-game state. In particular, mixer continuity still needs a live check.
 Keep capture files and generated outputs outside the public source tree.
