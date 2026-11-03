@@ -6,6 +6,8 @@
 
 - Remastered multiplayer accepts validated primary player records when secondary paths are unavailable, while retaining counter, identity, alias, timer, and conflicting-read guards. Learn & Play validation is unchanged.
 
+- Multiplayer song details and duration can resolve from both arrangement IDs in the local memory cache when a preview is missing or stale. Ambiguous matches remain unresolved.
+
 ### Tests
 
 - Added private typed-memory capture replay through the real reader and state tracker, plus regressions for Remastered validation and rejection of unsafe reads.

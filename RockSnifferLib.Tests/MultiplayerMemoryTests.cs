@@ -1,5 +1,6 @@
 using System.Text;
 using RockSnifferLib.RSHelpers;
+using RockSnifferLib.Cache;
 using RockSnifferLib.RSHelpers.Multiplayer;
 using RockSnifferLib.SysHelpers;
 using RockSnifferLib.Sniffing;
@@ -156,6 +157,42 @@ public class MultiplayerMemoryTests
         Assert.Equal("Lead", matched.Player1!.Path);
         var mismatch = reader.Read((_, _) => new SongDetails { songID = "wrong", songLength = 999 });
         Assert.Null(mismatch.SongId); Assert.Null(mismatch.DurationSeconds);
+    }
+
+    [Fact] public void RemasteredResolvesDurationAndAccuracyWithoutPreview()
+    {
+        var m = RemasteredReady();
+        m.Put(Module + 0xF5F514, new byte[4]);
+        const string bass = "22222222222222222222222222222222";
+        m.Put(P2 + 0x20, new Guid(bass).ToByteArray());
+        var song = new SongDetails {
+            songID = "synthetic", songName = "Synthetic fixture", songLength = 270,
+            arrangements = new() {
+                new() { arrangementID = Arrangement, type = "Lead" },
+                new() { arrangementID = bass, type = "Bass" },
+            }
+        };
+        var cache = new MemoryCache();
+        cache.Add("synthetic.psarc", new() { [song.songID] = song });
+        double now = 0;
+        using var reader = new ExperimentalMultiplayerReader(m, Module, RSEdition.Remastered, () => now);
+        MultiplayerSnapshot Read() => reader.Read((selected, ids) => MultiplayerSongResolver.Resolve(cache, selected, ids));
+        var paused = Read();
+        Assert.Equal("synthetic", paused.SongId);
+        Assert.Equal(270, paused.DurationSeconds);
+        Assert.Equal(4, paused.ElapsedSeconds);
+        Assert.Equal(75, paused.Player1!.Accuracy);
+        Assert.Equal(75, paused.Player2!.Accuracy);
+        Assert.Equal("Lead", paused.Player1.Path);
+        Assert.Equal("Bass", paused.Player2.Path);
+        now = .2;
+        m.Put(Module + 0xF5F5FC, new byte[] { 0 });
+        m.Put(0x3200000, BitConverter.GetBytes(4.2f));
+        m.Put(0x3300000, BitConverter.GetBytes(4.2f));
+        var playing = Read();
+        Assert.Equal("playing", playing.State);
+        Assert.Equal(270, playing.DurationSeconds);
+        Assert.Equal(4.2, playing.ElapsedSeconds!.Value, 5);
     }
 
     [Fact] public void LearnAndPlayStillRequiresSecondaryAgreement()

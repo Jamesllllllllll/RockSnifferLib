@@ -57,9 +57,12 @@ sniffer.OnMemoryReadout += (_, args) => {
 };
 ```
 
-Sniffer uses its cache and the observed preview ID for metadata lookup. If it
-attached after the preview disappeared, metadata may remain unavailable until
-the next selection. The standalone callback supports host-specific GUID lookup.
+Sniffer first validates a preview-based cache match against both arrangement
+GUIDs. With `MemoryCache`, an indexed lookup can also resolve the unique song
+containing both arrangements when the preview is missing or stale. Ambiguous or
+incomplete matches supply no inferred song identity or duration. Other cache
+implementations can opt into `IArrangementSongCache`; standalone callbacks remain
+available for host-specific lookup.
 The feature defaults off and does not redefine legacy single-player fields or
 emit multiplayer completion through legacy events. When enabled, ordinary
 timer/note fields are cleared during an experimental multiplayer run so their
