@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.9-rocklist.16] - 2026-11-02
+
+### Fixed
+
+- Continue loading readable arrangements and songs when a package contains empty, missing, or malformed arrangement assets or manifests.
+- Keep a completely unreadable package marked as a scan failure.
+
 ## [0.6.9-rocklist.15] - 2026-09-16
 
 ### Added
