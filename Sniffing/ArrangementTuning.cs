@@ -165,6 +165,7 @@ namespace RockSnifferLib.Sniffing
         }
 
         public string? ExtendedRangeName { get; set; }
+        public int? ExtendedRangeStringCount { get; private set; }
 
         internal void SetExtendedRangeOffsets(short[] offsets)
         {
@@ -177,11 +178,14 @@ namespace RockSnifferLib.Sniffing
                 _ => []
             };
 
-            if (standardNotes.Length == offsets.Length)
-                ExtendedRangeName = FormatRawTuning(
-                    standardNotes.Select((note, index) => note + offsets[index]),
-                    " "
-                );
+            if (standardNotes.Length == 0)
+                return;
+
+            ExtendedRangeStringCount = standardNotes.Length;
+            ExtendedRangeName = FormatRawTuning(
+                standardNotes.Select((note, index) => note + offsets[index]),
+                " "
+            );
         }
 
         internal void SetLegacyExtendedRangeOffsets(SongArrangement.ArrangementAttributes.ArrangementTuning tuning)
