@@ -1,5 +1,4 @@
 using Rocksmith2014PsarcLib.Psarc;
-using Rocksmith2014PsarcLib.Psarc.Asset;
 using Rocksmith2014PsarcLib.Psarc.Models.Json;
 using RockSnifferLib.Logging;
 using RockSnifferLib.Sniffing;
@@ -321,7 +320,7 @@ namespace RockSnifferLib.RSHelpers
 
                         SongDetails details = detailsDict[arrangement.SongKey];
 
-                        var arrangementSng = loader.InflateEntry<SngAsset>(a => a.Path.Equals($"songs/bin/generic/{arrangement.SongXml.Substring(20)}.sng"));
+                        var arrangementSng = loader.ExtractArrangementSng(arrangement);
                         var arrangement_vocals = arrangementSng.Vocals;
 
                         //Get a list of all vocals
@@ -344,8 +343,7 @@ namespace RockSnifferLib.RSHelpers
                     }
                     else //Not a vocal arrangement
                     {
-                        var sngPath = $"songs/bin/generic/{arrangement.SongXml.Substring(20)}.sng";
-                        var arrangementSng = loader.InflateEntry<SngAsset>(a => a.Path.Equals(sngPath));
+                        var arrangementSng = loader.ExtractArrangementSng(arrangement);
                         ArrangementData arrangementData = new(arrangementSng);
 
                         if (arrangement.Phrases != null)
