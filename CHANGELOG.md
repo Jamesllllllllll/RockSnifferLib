@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.9-rocklist.16] - 2026-11-26
+
+### Added
+
+- Index songs and timed vocals from RS Extended Range charts, including earlier rs7string charts, with the updated PSARC parser.
+
 ## [0.6.9-rocklist.15] - 2026-09-16
 
 ### Added

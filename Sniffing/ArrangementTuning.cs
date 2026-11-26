@@ -157,22 +157,52 @@ namespace RockSnifferLib.Sniffing
             return sb.ToString();
         }
 
+        public string? ExtendedRangeName { get; set; }
+
+        internal void SetExtendedRangeOffsets(short[] offsets)
+        {
+            int[] standardNotes = (IsBass, offsets.Length) switch
+            {
+                (false, 7) => [35, 40, 45, 50, 55, 59, 64],
+                (false, 8) => [30, 35, 40, 45, 50, 55, 59, 64],
+                (true, 5) => [23, 28, 33, 38, 43],
+                (true, 6) => [23, 28, 33, 38, 43, 48],
+                _ => []
+            };
+
+            if (standardNotes.Length == offsets.Length)
+                ExtendedRangeName = string.Join(" ", standardNotes.Select((note, index) =>
+                    NoteNames[((note + offsets[index]) % 12 + 12) % 12]));
+        }
+
+        internal void SetLegacyExtendedRangeOffsets(SongArrangement.ArrangementAttributes.ArrangementTuning tuning)
+        {
+            if (IsBass && tuning.Rs7String4 is short lowBass)
+            {
+                SetExtendedRangeOffsets(tuning.Rs7String5 is short highBass
+                    ? [lowBass, (short)String0, (short)String1, (short)String2, (short)String3, highBass]
+                    : [lowBass, (short)String0, (short)String1, (short)String2, (short)String3]);
+            }
+            else if (!IsBass && tuning.Rs7String6 is short lowGuitar)
+            {
+                SetExtendedRangeOffsets(tuning.Rs7String7 is short lowestGuitar
+                    ? [lowestGuitar, lowGuitar, (short)String0, (short)String1, (short)String2, (short)String3, (short)String4, (short)String5]
+                    : [lowGuitar, (short)String0, (short)String1, (short)String2, (short)String3, (short)String4, (short)String5]);
+            }
+        }
+
         public string TuningName
         {
             get
             {
-                string name = null;
+                var name = ExtendedRangeName;
 
-                //Find the tuning name in the dictionary (exact 6-string match)
-                KeyValuePair<string, ArrangementTuning> tuningNamePair = _TuningNames.FirstOrDefault(kvp => kvp.Value.Equals(this));
-                if (!tuningNamePair.Equals(default(KeyValuePair<string, ArrangementTuning>)))
-                    name = tuningNamePair.Key;
-
-                // If no dictionary match, fall back to raw per-string note names
                 if (name == null)
-                    name = GetRawTuningName();
-                else
-                    name = name.Replace("1G-", "").Replace("2G-", "").Replace("3G-", "").Replace("1B-", "").Replace("2B-", "").Replace("3B-", "");
+                {
+                    var tuningNamePair = _TuningNames.FirstOrDefault(kvp => kvp.Value.Equals(this));
+                    name = tuningNamePair.Key?.Replace("1G-", "").Replace("2G-", "").Replace("3G-", "")
+                        .Replace("1B-", "").Replace("2B-", "").Replace("3B-", "") ?? GetRawTuningName();
+                }
 
                 //Calculate estimated hz offset from cents offset, if nonzero
                 if (CentsOffset != 0)

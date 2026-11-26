@@ -231,10 +231,7 @@ namespace RockSnifferLib.RSHelpers
                     Span<byte> identifier = stackalloc byte[4];
                     if (
                         stream.Read(identifier) != identifier.Length ||
-                        identifier[0] != (byte)'P' ||
-                        identifier[1] != (byte)'S' ||
-                        identifier[2] != (byte)'A' ||
-                        identifier[3] != (byte)'R'
+                        (!identifier.SequenceEqual("PSAR"u8) && !identifier.SequenceEqual("PSXR"u8))
                     )
                     {
                         return false;
@@ -452,6 +449,10 @@ namespace RockSnifferLib.RSHelpers
 
                             arrangementDetails.tuning = new ArrangementTuning(arrangement.Tuning, (int)arrangement.CentOffset, (int)arrangement.CapoFret);
                             arrangementDetails.tuning.IsBass = (arrangementDetails.type == "Bass");
+                            if (arrangementSng.ExtendedRangeStringCount.HasValue)
+                                arrangementDetails.tuning.SetExtendedRangeOffsets(arrangementSng.Metadata.Tuning);
+                            else
+                                arrangementDetails.tuning.SetLegacyExtendedRangeOffsets(arrangement.Tuning);
 
 
                             //file hash
