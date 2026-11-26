@@ -147,14 +147,21 @@ namespace RockSnifferLib.Sniffing
         private string GetRawTuningName()
         {
             int[] offsets = { String0, String1, String2, String3, String4, String5 };
-            int stringCount = IsBass ? 4 : 6;
-            var sb = new System.Text.StringBuilder();
-            for (int i = 0; i < stringCount; i++)
-            {
-                int semitone = ((StandardBase[i] + offsets[i]) % 12 + 12) % 12;
-                sb.Append(NoteNames[semitone]);
-            }
-            return sb.ToString();
+            return FormatRawTuning(
+                StandardBase.Take(IsBass ? 4 : 6).Select((note, index) => note + offsets[index]),
+                ""
+            );
+        }
+
+        private static string FormatRawTuning(IEnumerable<int> pitches, string separator)
+        {
+            var noteNames = pitches.Select(pitch => NoteNames[(pitch % 12 + 12) % 12]).ToArray();
+
+            // The flat standard tuning pattern spells its F-sharp pitch as G-flat.
+            var useGFlat = noteNames.Contains("Bb") && noteNames.Contains("Eb") &&
+                noteNames.Contains("Ab") && noteNames.Contains("Db");
+
+            return string.Join(separator, noteNames.Select(note => useGFlat && note == "F#" ? "Gb" : note));
         }
 
         public string? ExtendedRangeName { get; set; }
@@ -171,8 +178,10 @@ namespace RockSnifferLib.Sniffing
             };
 
             if (standardNotes.Length == offsets.Length)
-                ExtendedRangeName = string.Join(" ", standardNotes.Select((note, index) =>
-                    NoteNames[((note + offsets[index]) % 12 + 12) % 12]));
+                ExtendedRangeName = FormatRawTuning(
+                    standardNotes.Select((note, index) => note + offsets[index]),
+                    " "
+                );
         }
 
         internal void SetLegacyExtendedRangeOffsets(SongArrangement.ArrangementAttributes.ArrangementTuning tuning)
