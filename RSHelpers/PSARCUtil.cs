@@ -1,4 +1,5 @@
 using Rocksmith2014PsarcLib.Psarc;
+using Rocksmith2014PsarcLib.Psarc.Asset;
 using Rocksmith2014PsarcLib.Psarc.Models.Json;
 using RockSnifferLib.Logging;
 using RockSnifferLib.Sniffing;
