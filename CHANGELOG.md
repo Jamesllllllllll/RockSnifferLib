@@ -1,10 +1,29 @@
 # Changelog
 
-## [0.6.9-rocklist.16] - 2026-11-26
+## [0.6.9-rocklist.18] - 2026-11-27
 
 ### Added
 
 - Index songs and timed vocals from RS Extended Range charts, including earlier rs7string charts, with the updated PSARC parser.
+
+## [0.6.9-rocklist.17] - 2026-11-03
+
+### Fixed
+
+- Remastered multiplayer accepts validated primary player records when secondary paths are unavailable, while retaining counter, identity, alias, timer, and conflicting-read guards. Learn & Play validation is unchanged.
+
+- Multiplayer song details and duration can resolve from both arrangement IDs in the local memory cache when a preview is missing or stale. Ambiguous matches remain unresolved.
+
+### Tests
+
+- Added private typed-memory capture replay through the real reader and state tracker, plus regressions for Remastered validation and rejection of unsafe reads.
+
+## [0.6.9-rocklist.16] - 2026-11-02
+
+### Fixed
+
+- Continue loading readable arrangements and songs when a package contains empty, missing, or malformed arrangement assets or manifests.
+- Keep a completely unreadable package marked as a scan failure.
 
 ## [0.6.9-rocklist.15] - 2026-09-16
 

@@ -1,5 +1,6 @@
 using System.Text;
 using RockSnifferLib.RSHelpers;
+using RockSnifferLib.Cache;
 using RockSnifferLib.RSHelpers.Multiplayer;
 using RockSnifferLib.SysHelpers;
 using RockSnifferLib.Sniffing;
@@ -17,11 +18,13 @@ public class MultiplayerMemoryTests
         private uint allocation = 0x2000000;
         public bool Disposed;
         public int Reads;
+        public Action<uint, int>? BeforeRead;
         public void Put(uint address, byte[] bytes)
         { for (int i = 0; i < bytes.Length; i++) Data[address + (uint)i] = bytes[i]; }
         public byte[]? Read(uint address, int size)
         {
             Reads++;
+            BeforeRead?.Invoke(address, size);
             Assert.InRange(size, 1, 128);
             return Enumerable.Range(0, size).All(i => Data.ContainsKey(address + (uint)i))
                 ? Enumerable.Range(0, size).Select(i => Data[address + (uint)i]).ToArray() : null;
@@ -122,6 +125,122 @@ public class MultiplayerMemoryTests
         Assert.Null(snapshot.Player1);
         Assert.Null(snapshot.Player2);
     }
+
+    private static Memory RemasteredReady()
+    {
+        var m = Ready();
+        foreach (var pair in m.Data.Where(p => p.Key >= Module && p.Key < Module + 0x1000000).ToArray())
+        {
+            m.Data.Remove(pair.Key);
+            m.Data[pair.Key - 0x1000] = pair.Value;
+        }
+        // Simulate the secondary path failing at its module root.
+        for (uint i = 0; i < 4; i++) m.Data.Remove(Module + 0xF5F588 + i);
+        return m;
+    }
+
+    [Fact] public void RemasteredUsesValidatedPrimaryPathsWhenSecondaryIsUnavailable()
+    {
+        var m = RemasteredReady();
+        using var reader = new ExperimentalMultiplayerReader(m, Module, RSEdition.Remastered);
+        var snapshot = reader.Read();
+        Assert.Equal("paused", snapshot.State);
+        Assert.Equal(147, snapshot.Player1!.Hits);
+        Assert.Equal(49, snapshot.Player2!.Misses);
+        Assert.True(snapshot.TimerReliable);
+        Assert.Null(snapshot.SongId); // Counter validation cannot invent catalog metadata.
+        var matched = reader.Read((_, _) => new SongDetails {
+            songID = "synthetic", songLength = 240,
+            arrangements = new() { new ArrangementDetails { arrangementID = Arrangement, type = "Lead" } }
+        });
+        Assert.Equal("synthetic", matched.SongId);
+        Assert.Equal("Lead", matched.Player1!.Path);
+        var mismatch = reader.Read((_, _) => new SongDetails { songID = "wrong", songLength = 999 });
+        Assert.Null(mismatch.SongId); Assert.Null(mismatch.DurationSeconds);
+    }
+
+    [Fact] public void RemasteredResolvesDurationAndAccuracyWithoutPreview()
+    {
+        var m = RemasteredReady();
+        m.Put(Module + 0xF5F514, new byte[4]);
+        const string bass = "22222222222222222222222222222222";
+        m.Put(P2 + 0x20, new Guid(bass).ToByteArray());
+        var song = new SongDetails {
+            songID = "synthetic", songName = "Synthetic fixture", songLength = 270,
+            arrangements = new() {
+                new() { arrangementID = Arrangement, type = "Lead" },
+                new() { arrangementID = bass, type = "Bass" },
+            }
+        };
+        var cache = new MemoryCache();
+        cache.Add("synthetic.psarc", new() { [song.songID] = song });
+        double now = 0;
+        using var reader = new ExperimentalMultiplayerReader(m, Module, RSEdition.Remastered, () => now);
+        MultiplayerSnapshot Read() => reader.Read((selected, ids) => MultiplayerSongResolver.Resolve(cache, selected, ids));
+        var paused = Read();
+        Assert.Equal("synthetic", paused.SongId);
+        Assert.Equal(270, paused.DurationSeconds);
+        Assert.Equal(4, paused.ElapsedSeconds);
+        Assert.Equal(75, paused.Player1!.Accuracy);
+        Assert.Equal(75, paused.Player2!.Accuracy);
+        Assert.Equal("Lead", paused.Player1.Path);
+        Assert.Equal("Bass", paused.Player2.Path);
+        now = .2;
+        m.Put(Module + 0xF5F5FC, new byte[] { 0 });
+        m.Put(0x3200000, BitConverter.GetBytes(4.2f));
+        m.Put(0x3300000, BitConverter.GetBytes(4.2f));
+        var playing = Read();
+        Assert.Equal("playing", playing.State);
+        Assert.Equal(270, playing.DurationSeconds);
+        Assert.Equal(4.2, playing.ElapsedSeconds!.Value, 5);
+    }
+
+    [Fact] public void LearnAndPlayStillRequiresSecondaryAgreement()
+    {
+        var m = Ready();
+        m.Put(Module + 0xF60588, new byte[4]);
+        using var reader = new ExperimentalMultiplayerReader(m, Module);
+        Assert.Null(reader.Read().RunId);
+    }
+
+    [Theory] [InlineData(true)] [InlineData(false)]
+    public void RemasteredRejectsBadPrimaryCountersAndAliases(bool alias)
+    {
+        var m = RemasteredReady();
+        if (alias) m.Chain(0xF5F62C, P1, 0xB0, 0x34, 0x18, 4, 0x74, 0);
+        else m.Put(P1 + 8, BitConverter.GetBytes(12));
+        using var reader = new ExperimentalMultiplayerReader(m, Module, RSEdition.Remastered);
+        Assert.Null(reader.Read().RunId);
+    }
+
+    [Fact] public void RemasteredRejectsAReadableConflictingSecondaryRecord()
+    {
+        var m = RemasteredReady();
+        m.Chain(0xF5F588, P2, 0x134, 0x88, 0x28, 0, 0x24, 0);
+        using var reader = new ExperimentalMultiplayerReader(m, Module, RSEdition.Remastered);
+        Assert.Null(reader.Read().RunId);
+    }
+
+    [Fact] public void RemasteredDoesNotPublishUnsynchronisedPlayerTimers()
+    {
+        var m = RemasteredReady();
+        m.Put(0x3300000, BitConverter.GetBytes(5f));
+        using var reader = new ExperimentalMultiplayerReader(m, Module, RSEdition.Remastered);
+        Assert.Null(reader.Read().RunId);
+    }
+
+    [Fact] public void RemasteredRejectsPrimaryDataChangingBetweenReads()
+    {
+        var m = RemasteredReady();
+        int playerReads = 0;
+        m.BeforeRead = (address, size) => {
+            if (address == P1 && size == 0x48 && ++playerReads == 2)
+                m.Put(P1 + 0x30, BitConverter.GetBytes(148));
+        };
+        using var reader = new ExperimentalMultiplayerReader(m, Module, RSEdition.Remastered);
+        Assert.Null(reader.Read().RunId);
+    }
+
     [Fact] public void FailedMemoryAndBadMarkerNeverBecomeZeroStats()
     {
         var m = Ready(); m.Data.Remove(P1 + 0x40);

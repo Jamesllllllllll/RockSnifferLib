@@ -4,6 +4,7 @@ using RockSnifferLib.Events;
 using RockSnifferLib.Logging;
 using RockSnifferLib.RSHelpers;
 using RockSnifferLib.RSHelpers.NoteData;
+using RockSnifferLib.RSHelpers.Multiplayer;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -436,10 +437,14 @@ namespace RockSnifferLib.Sniffing
                     if (multiplayerReader != null)
                     {
                         newReadout.experimentalMultiplayer = multiplayerReader.Read((selected, ids) =>
-                            string.IsNullOrEmpty(selected) ? null : _cache.Get(selected));
+                            MultiplayerSongResolver.Resolve(_cache, selected, ids));
                         if (newReadout.experimentalMultiplayer.Supported &&
                             newReadout.experimentalMultiplayer.State != "inactive")
                         {
+                            // Keep the shared song-details path aligned with an exact
+                            // multiplayer catalog match, including missing previews.
+                            if (!string.IsNullOrEmpty(newReadout.experimentalMultiplayer.SongId))
+                                newReadout.songID = newReadout.experimentalMultiplayer.SongId;
                             // The experimental snapshot owns multiplayer timing/stats.
                             // Keep invalid ordinary paths away from legacy completion logic.
                             newReadout.songTimer = 0;

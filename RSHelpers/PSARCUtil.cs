@@ -7,6 +7,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
+using Newtonsoft.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -286,18 +288,16 @@ namespace RockSnifferLib.RSHelpers
                 //Extract toolkit info
                 var tkInfo = loader.ExtractToolkitInfo();
 
-                List<SongArrangement> manifests;
+                var manifests = new List<SongArrangement>();
+                foreach (var entry in loader.TOC.Entries.Where(entry => entry.Path?.EndsWith(".json", StringComparison.OrdinalIgnoreCase) == true))
+                {
+                    if (TryReadArrangementEntry<JsonObjectAsset<SongArrangement>>(loader, entry, out var manifest) &&
+                        manifest?.JsonObject?.Attributes != null)
+                    {
+                        manifests.Add(manifest.JsonObject);
+                    }
+                }
 
-                try
-                {
-                    manifests = loader.ExtractArrangementManifests();
-                }
-                catch (Exception e)
-                {
-                    Logger.LogError("Warning! Could not parse psarc file {0}: {1}", fileInfo.Name, e.Message);
-                    return null;
-                }
-                
                 //Extract all arrangements
                 foreach (var v in manifests)
                 {
@@ -308,6 +308,20 @@ namespace RockSnifferLib.RSHelpers
                     }
 
                     var arrangement = v.Attributes;
+                    if (string.IsNullOrWhiteSpace(arrangement.SongKey) ||
+                        string.IsNullOrWhiteSpace(arrangement.ArrangementName) ||
+                        string.IsNullOrWhiteSpace(arrangement.SongXml) || arrangement.SongXml.Length <= 20)
+                    {
+                        Logger.LogError("Skipped arrangement with incomplete metadata in {0}", fileInfo.Name);
+                        continue;
+                    }
+                    var assetPath = $"songs/bin/generic/{arrangement.SongXml.Substring(20)}.sng";
+                    var assetEntry = loader.TOC.Entries.FirstOrDefault(entry => entry.Path == assetPath);
+                    if (!TryReadArrangementEntry<SngAsset>(loader, assetEntry, out var arrangementSng,
+                        () => loader.ExtractArrangementSng(arrangement)))
+                    {
+                        continue;
+                    }
                     var arrangement_id = arrangement.PersistentID;
                     var arrangement_name = arrangement.ArrangementName;
 
@@ -320,7 +334,6 @@ namespace RockSnifferLib.RSHelpers
 
                         SongDetails details = detailsDict[arrangement.SongKey];
 
-                        var arrangementSng = loader.ExtractArrangementSng(arrangement);
                         var arrangement_vocals = arrangementSng.Vocals;
 
                         //Get a list of all vocals
@@ -343,7 +356,6 @@ namespace RockSnifferLib.RSHelpers
                     }
                     else //Not a vocal arrangement
                     {
-                        var arrangementSng = loader.ExtractArrangementSng(arrangement);
                         ArrangementData arrangementData = new(arrangementSng);
 
                         if (arrangement.Phrases != null)
@@ -476,6 +488,10 @@ namespace RockSnifferLib.RSHelpers
                         }
                     }
                 }
+                if (!detailsDict.Values.Any(details => details.IsValid()))
+                {
+                    throw new InvalidDataException("The archive contains no readable song arrangements.");
+                }
                 sw.Stop();
 
                 Logger.Log("Parsed {0} ({1}mb) in {2}ms and found {3} songs", fileInfo.Name, fileInfo.Length / 1024 / 1024, sw.ElapsedMilliseconds, detailsDict.Count);
@@ -483,6 +499,41 @@ namespace RockSnifferLib.RSHelpers
                 return detailsDict;
             }
 
+        }
+
+        // A broken entry must not discard the remaining songs in a multi-song pack.
+        // Keep errors local to the scan; callers still receive all readable entries.
+        internal static bool TryReadArrangementEntry<T>(
+            PsarcFile loader,
+            PsarcTOCEntry? entry,
+            out T? asset,
+            Func<T>? read = null
+        ) where T : PsarcAsset, new()
+        {
+            asset = null;
+            if (entry == null || entry.Length == 0)
+            {
+                Logger.LogError("Skipped missing or empty arrangement entry: {0}", entry?.Path ?? "unknown");
+                return false;
+            }
+
+            try
+            {
+                asset = read == null ? loader.InflateEntry<T>(entry) : read();
+                return asset != null;
+            }
+            catch (Exception error) when (
+                error is IOException ||
+                error is InvalidDataException ||
+                error is JsonException ||
+                error is ArgumentException ||
+                error is InvalidOperationException ||
+                error is IndexOutOfRangeException
+            )
+            {
+                Logger.LogError("Skipped unreadable arrangement entry {0}: {1}", entry.Path, error.Message);
+                return false;
+            }
         }
 
         public static string GetFileHash(FileInfo fileInfo)

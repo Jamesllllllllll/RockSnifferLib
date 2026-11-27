@@ -19,6 +19,8 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
     private readonly uint module;
     private readonly ExperimentalMemoryOffsets offsets;
     private readonly MultiplayerTracker tracker = new();
+    private readonly bool allowPrimaryOnly;
+    private readonly Func<double>? replayTime;
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private string? selectedSongId;
     private bool disposed;
@@ -28,6 +30,7 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
     public ExperimentalMultiplayerReader(Process process, RSEdition edition)
     {
         ArgumentNullException.ThrowIfNull(process);
+        allowPrimaryOnly = edition == RSEdition.Remastered;
         if (!ExperimentalMemoryOffsets.TryCreate(edition, out offsets)) return;
         if (!OperatingSystem.IsWindows()) return;
         var image = process.MainModule;
@@ -38,9 +41,11 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
     }
 
     internal ExperimentalMultiplayerReader(IReadMemory memory, uint module,
-        RSEdition edition = RSEdition.Remastered_Learn_And_Play)
+        RSEdition edition = RSEdition.Remastered_Learn_And_Play, Func<double>? replayTime = null)
     {
         this.memory = memory;
+        this.allowPrimaryOnly = edition == RSEdition.Remastered;
+        this.replayTime = replayTime;
         this.module = module;
         Supported = ExperimentalMemoryOffsets.TryCreate(edition, out offsets);
     }
@@ -73,7 +78,7 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
             }
             p1 = Enrich(p1, song); p2 = Enrich(p2, song);
             var pause = Bytes(module + offsets.Pause, 1);
-            return tracker.Update(new MultiplayerFrame(clock.Elapsed.TotalSeconds,
+            return tracker.Update(new MultiplayerFrame(replayTime?.Invoke() ?? clock.Elapsed.TotalSeconds,
                 Text(module + offsets.Stage, 64), pause == null ? null : pause[0],
                 Float(Walk(offsets.GameRoot, 0xB0, 0x30, 0x538, 8)),
                 Float(Walk(offsets.GameRoot, 0xB0, 0x34, 0x538, 8)), p1, p2,
@@ -91,9 +96,17 @@ public sealed class ExperimentalMultiplayerReader : IDisposable
 
     private PlayerRead? Player(int slot, uint a, uint b)
     {
-        if (a == 0 || a != b) return null;
+        // Remastered's primary paths survived independent-player tests and full
+        // process restarts; the secondary paths were unavailable throughout.
+        // Keep Learn & Play's existing two-path requirement. A readable but
+        // conflicting secondary record is still evidence against either edition.
+        if (a == 0 || (!allowPrimaryOnly && a != b)) return null;
         var first = ReadPlayer(slot, a);
-        var second = ReadPlayer(slot, b);
+        if (first == null) return null;
+        if (a != b && b != 0 && ReadPlayer(slot, b) != null) return null;
+        // Re-read the primary record to reject a counter/identity change during
+        // this sample. The tracker additionally checks both players and timers.
+        var second = ReadPlayer(slot, a);
         return first != null && first == second ? new PlayerRead(a, first) : null;
     }
 
