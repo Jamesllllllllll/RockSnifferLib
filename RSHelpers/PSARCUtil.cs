@@ -233,10 +233,7 @@ namespace RockSnifferLib.RSHelpers
                     Span<byte> identifier = stackalloc byte[4];
                     if (
                         stream.Read(identifier) != identifier.Length ||
-                        identifier[0] != (byte)'P' ||
-                        identifier[1] != (byte)'S' ||
-                        identifier[2] != (byte)'A' ||
-                        identifier[3] != (byte)'R'
+                        (!identifier.SequenceEqual("PSAR"u8) && !identifier.SequenceEqual("PSXR"u8))
                     )
                     {
                         return false;
@@ -321,7 +318,8 @@ namespace RockSnifferLib.RSHelpers
                     }
                     var assetPath = $"songs/bin/generic/{arrangement.SongXml.Substring(20)}.sng";
                     var assetEntry = loader.TOC.Entries.FirstOrDefault(entry => entry.Path == assetPath);
-                    if (!TryReadArrangementEntry<SngAsset>(loader, assetEntry, out var arrangementSng))
+                    if (!TryReadArrangementEntry<SngAsset>(loader, assetEntry, out var arrangementSng,
+                        () => loader.ExtractArrangementSng(arrangement)))
                     {
                         continue;
                     }
@@ -462,6 +460,10 @@ namespace RockSnifferLib.RSHelpers
 
                             arrangementDetails.tuning = new ArrangementTuning(arrangement.Tuning, (int)arrangement.CentOffset, (int)arrangement.CapoFret);
                             arrangementDetails.tuning.IsBass = (arrangementDetails.type == "Bass");
+                            if (arrangementSng.ExtendedRangeStringCount.HasValue)
+                                arrangementDetails.tuning.SetExtendedRangeOffsets(arrangementSng.Metadata.Tuning);
+                            else
+                                arrangementDetails.tuning.SetLegacyExtendedRangeOffsets(arrangement.Tuning);
 
 
                             //file hash
@@ -505,7 +507,8 @@ namespace RockSnifferLib.RSHelpers
         internal static bool TryReadArrangementEntry<T>(
             PsarcFile loader,
             PsarcTOCEntry? entry,
-            out T? asset
+            out T? asset,
+            Func<T>? read = null
         ) where T : PsarcAsset, new()
         {
             asset = null;
@@ -517,11 +520,12 @@ namespace RockSnifferLib.RSHelpers
 
             try
             {
-                asset = loader.InflateEntry<T>(entry);
+                asset = read == null ? loader.InflateEntry<T>(entry) : read();
                 return asset != null;
             }
             catch (Exception error) when (
                 error is IOException ||
+                error is InvalidDataException ||
                 error is JsonException ||
                 error is ArgumentException ||
                 error is InvalidOperationException ||
