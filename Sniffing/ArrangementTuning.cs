@@ -166,13 +166,43 @@ namespace RockSnifferLib.Sniffing
             OpenStringPitches = standardPitches.Select((pitch, index) => pitch + offsets[index]).ToArray();
         }
 
-        private static readonly string[] NoteNames = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+        private static readonly string[] SharpNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        private static readonly string[] FlatNames = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+
+        // Expected letter distance for each interval in semitones. Either spelling of a tritone is valid.
+        private static readonly int[] IntervalLetterSteps = [0, 1, 1, 2, 2, 3, -1, 4, 5, 5, 6, 6];
+
+        private static (int intervalMismatches, int signatureSize) SpellingCost(
+            int[] pitchClasses, string[] names, string accidentalOrder)
+        {
+            int intervalMismatches = 0;
+            int signatureSize = 0;
+            for (int i = 0; i < pitchClasses.Length; i++)
+            {
+                int pitch = pitchClasses[i];
+                string name = names[pitch];
+                if (name.Length > 1)
+                    signatureSize = Math.Max(signatureSize, accidentalOrder.IndexOf(name[0]) + 1);
+
+                if (i == 0) continue;
+                int previous = pitchClasses[i - 1];
+                int semitones = (pitch - previous + 12) % 12;
+                int letterSteps = (name[0] - names[previous][0] + 7) % 7;
+                if (IntervalLetterSteps[semitones] >= 0 && letterSteps != IntervalLetterSteps[semitones])
+                    intervalMismatches++;
+            }
+            return (intervalMismatches, signatureSize);
+        }
 
         private static string FormatExtendedTuning(int[] pitches)
         {
-            var names = pitches.Select(pitch => NoteNames[((pitch % 12) + 12) % 12]).ToArray();
-            var useGFlat = names.Contains("Bb") && names.Contains("Eb") && names.Contains("Ab") && names.Contains("Db");
-            return string.Join(" ", names.Select(name => useGFlat && name == "F#" ? "Gb" : name));
+            var pitchClasses = pitches.Select(pitch => ((pitch % 12) + 12) % 12).ToArray();
+            // Preserve familiar interval names (e.g. F# to B is a fourth). Break ties by
+            // the fewest key-signature accidentals needed, then prefer flats on an exact tie.
+            var sharps = SpellingCost(pitchClasses, SharpNames, "FCGDA");
+            var flats = SpellingCost(pitchClasses, FlatNames, "BEADG");
+            var names = sharps.CompareTo(flats) < 0 ? SharpNames : FlatNames;
+            return string.Join(" ", pitchClasses.Select(pitch => names[pitch]));
         }
 
         public string TuningName
