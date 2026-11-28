@@ -154,7 +154,7 @@ namespace RockSnifferLib.RSHelpers
 
                         SongDetails details = detailsDict[arrangement.SongKey];
 
-                        var arrangementSng = loader.InflateEntry<SngAsset>(a => a.Path.Equals($"songs/bin/generic/{arrangement.SongXml.Substring(20)}.sng"));
+                        var arrangementSng = loader.ExtractArrangementSng(arrangement);
                         var arrangement_vocals = arrangementSng.Vocals;
 
                         //Get a list of all vocals
@@ -177,8 +177,7 @@ namespace RockSnifferLib.RSHelpers
                     }
                     else //Not a vocal arrangement
                     {
-                        var sngPath = $"songs/bin/generic/{arrangement.SongXml.Substring(20)}.sng";
-                        var arrangementSng = loader.InflateEntry<SngAsset>(a => a.Path.Equals(sngPath));
+                        var arrangementSng = loader.ExtractArrangementSng(arrangement);
                         ArrangementData arrangementData = new(arrangementSng);
 
                         if (arrangement.Phrases != null)
@@ -256,6 +255,8 @@ namespace RockSnifferLib.RSHelpers
 
                             // Build a hash from the note data in each arrangement
                             var noteDataHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                            var extendedRangeStrings = arrangementSng.ExtendedRangeStringCount ??
+                                arrangementSng.LegacyExtendedRangeStringCount;
 
                             // Only record cent offset in the hash if it is greater than 50 (1/4 step)
                             if (arrangement.CentOffset > 50)
@@ -267,12 +268,25 @@ namespace RockSnifferLib.RSHelpers
                             noteDataHash.AppendData(BitConverter.GetBytes(arrangement.CapoFret));
 
                             // Record the tuning in the hash
-                            noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String0));
-                            noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String1));
-                            noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String2));
-                            noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String3));
-                            noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String4));
-                            noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String5));
+                            if (extendedRangeStrings is int stringCount)
+                            {
+                                // Legacy and native bodies number some strings differently.
+                                noteDataHash.AppendData(arrangementSng.ExtendedRangeStringCount.HasValue ?
+                                    "rock-buddy:snxr:v1"u8 : "rock-buddy:rs7x:v1"u8);
+                                noteDataHash.AppendData(BitConverter.GetBytes(stringCount));
+                                for (var index = 0; index < stringCount; index++)
+                                    noteDataHash.AppendData(BitConverter.GetBytes(arrangementSng.Metadata.Tuning[index]));
+                            }
+                            else
+                            {
+                                // Keep ordinary chart fingerprints byte-for-byte compatible.
+                                noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String0));
+                                noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String1));
+                                noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String2));
+                                noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String3));
+                                noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String4));
+                                noteDataHash.AppendData(BitConverter.GetBytes(arrangement.Tuning.String5));
+                            }
 
                             // NOTE: Rocksmith COMPLETELY ignores all notes above the 22nd fret. To get a proper "totalNotes" count we need to ignore them too.
                             // Additionally there are some other caveats to how Rocksmith tracks notes and these are handled here
@@ -344,6 +358,11 @@ namespace RockSnifferLib.RSHelpers
 
                                         noteDataHash.AppendData([note.StringIndex]);
                                         noteDataHash.AppendData([note.FretId]);
+                                        if (extendedRangeStrings.HasValue && note.FretId == byte.MaxValue)
+                                        {
+                                            // A different extra-string chord shape must get its own fingerprint.
+                                            noteDataHash.AppendData(arrangementSng.Chords[note.ChordId].Frets);
+                                        }
                                         noteDataHash.AppendData([note.AnchorFretId]);
                                         noteDataHash.AppendData([note.AnchorWidth]);
 
