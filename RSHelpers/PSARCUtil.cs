@@ -618,6 +618,12 @@ namespace RockSnifferLib.RSHelpers
                             }
 
                             arrangementDetails.tuning = new ArrangementTuning(arrangement.Tuning, (int)arrangement.CentOffset, (int)arrangement.CapoFret);
+                            if (extendedRangeStrings is int width)
+                            {
+                                arrangementDetails.tuning.SetExtendedRangePitches(
+                                    string.Equals(arrangement.ArrangementName, "Bass", StringComparison.OrdinalIgnoreCase),
+                                    width, arrangementSng.Metadata.Tuning, arrangementSng.LegacyExtendedRangeStringCount.HasValue);
+                            }
 
 
                             //file hash

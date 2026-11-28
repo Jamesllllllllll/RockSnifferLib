@@ -136,16 +136,60 @@ namespace RockSnifferLib.Sniffing
             ["C6 Modal"] = new ArrangementTuning(-4, 0, -2, 0, 1, 0, -999, -999),
         };
 
+        // Positional MIDI pitches, thickest string first. Persist them with the cached arrangement.
+        public int[]? OpenStringPitches { get; set; }
+
+        internal void SetExtendedRangePitches(bool isBass, int stringCount, short[] offsets, bool legacy)
+        {
+            int[] standardPitches = (isBass, stringCount) switch
+            {
+                (false, 7) => [35, 40, 45, 50, 55, 59, 64],
+                (false, 8) => [30, 35, 40, 45, 50, 55, 59, 64],
+                (true, 5) => [23, 28, 33, 38, 43],
+                (true, 6) => [23, 28, 33, 38, 43, 48],
+                _ => []
+            };
+            if (standardPitches.Length == 0) return;
+
+            if (legacy)
+            {
+                // RS7X keeps stock strings in their original slots and appends extra strings.
+                offsets = (isBass, stringCount) switch
+                {
+                    (false, 7) => [offsets[6], .. offsets[..6]],
+                    (false, 8) => [offsets[7], offsets[6], .. offsets[..6]],
+                    (true, 5) => [offsets[4], .. offsets[..4]],
+                    (true, 6) => [offsets[4], .. offsets[..4], offsets[5]],
+                    _ => offsets
+                };
+            }
+            OpenStringPitches = standardPitches.Select((pitch, index) => pitch + offsets[index]).ToArray();
+        }
+
+        private static readonly string[] NoteNames = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+
+        private static string FormatExtendedTuning(int[] pitches)
+        {
+            var names = pitches.Select(pitch => NoteNames[((pitch % 12) + 12) % 12]).ToArray();
+            var useGFlat = names.Contains("Bb") && names.Contains("Eb") && names.Contains("Ab") && names.Contains("Db");
+            return string.Join(" ", names.Select(name => useGFlat && name == "F#" ? "Gb" : name));
+        }
+
         public string TuningName
         {
             get
             {
-                string name = "Custom Tuning";
-
-                //Find the tuning name in the dictionary
-                KeyValuePair<string, ArrangementTuning> tuningNamePair = _TuningNames.FirstOrDefault(kvp => kvp.Value.Equals(this));
-                if (!tuningNamePair.Equals(default(KeyValuePair<string, ArrangementTuning>))) name = tuningNamePair.Key;
-                name = name.Replace("1G-", "").Replace("2G-", "").Replace("3G-", "").Replace("1B-", "").Replace("2B-", "").Replace("3B-", "");
+                string name;
+                if (OpenStringPitches is { Length: > 0 } pitches)
+                {
+                    name = FormatExtendedTuning(pitches);
+                }
+                else
+                {
+                    var match = _TuningNames.FirstOrDefault(kvp => kvp.Value.Equals(this));
+                    name = match.Key?.Replace("1G-", "").Replace("2G-", "").Replace("3G-", "")
+                        .Replace("1B-", "").Replace("2B-", "").Replace("3B-", "") ?? "Custom Tuning";
+                }
 
                 //Calculate estimated hz offset from cents offset, if nonzero
                 if (CentsOffset != 0)
